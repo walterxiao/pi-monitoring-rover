@@ -333,15 +333,6 @@ a dark shiny object, or a shadow can confuse it (it may stop and turn
 for no reason, or miss a glass or low obstacle). If it stops too
 often, the floor is probably too patterned for this method.
 
-**Adding a real distance sensor (optional):** a Benewake TF-Luna
-(35 × 21.25 × 12.5 mm) over USB gives true distance numbers. Print
-the glue-on tray `tfluna_mount.stl` on the A1 mini — PLA, 0.2 mm
-layers, no supports, about 15 minutes. Glue the tray's flat base to
-the front of the chassis with the lenses facing forward (clear of the
-camera's view), then fix the sensor into the tray with a dab of hot
-glue or double-sided tape; the cable exits through the gap at the
-back of the tray.
-
 ---
 
 ## Troubleshooting quick table
