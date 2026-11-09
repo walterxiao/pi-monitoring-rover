@@ -291,14 +291,16 @@ drives on. The **red dot** marks where the camera thinks the line is,
 so if the dot isn't on the tape, the camera is seeing something else. Tap the button again to stop, or tap any
 D-pad button — manual control takes over instantly.
 
-**Safety:** it stops by itself if the line disappears for 2 seconds,
-or if the page closes / loses contact for 3 seconds. The watchdog
+**Safety:** it stops by itself the moment the line disappears — it
+does not creep forward to search — or if the page closes / loses
+contact for 3 seconds. The watchdog
 still applies, so the motors stop if anything goes wrong.
 
 **If it won't follow:** check the camera tilt first, then the line —
 too thin, too pale, or a blue floor/rug are the usual causes. Bright,
 even room light helps; a line crossing a blue rug will confuse it.
-If the status says "searching", open `http://<pi-address>:8001/debug`
+If it keeps stopping with "line lost" even though the tape is right
+there, open `http://<pi-address>:8001/debug`
 on your phone (with the drive page open in another tab) — it shows how
 many blue pixels the camera sees and the average colors, which tells
 whether the tape is in view at all.

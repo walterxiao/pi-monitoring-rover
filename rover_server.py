@@ -25,7 +25,8 @@ shows a green center box: the rover drives straight while the line is
 inside the box. If the line drifts out of the box, the rover stops and
 spins in place toward the line until it's back inside, then drives on
 (the red dot marks where the camera thinks the line is).
-Safety: it stops if the line is lost for 2 seconds, if you tap any
+Safety: it stops the moment the line is lost (no creeping forward to
+search), if you tap any
 D-pad button (manual takes over instantly), or if the page closes or
 loses contact for 3 seconds (the page heartbeats while auto is on).
 A watchdog also stops the motors within ~1.5 seconds if commands stop
@@ -598,10 +599,9 @@ AUTO = {"active": False, "cam": False, "last_ping": 0.0,
         "status": "auto off"}
 AUTO_LOCK = threading.Lock()
 # Line-follow speeds: low power can't move the loaded rover, so
-# everything runs at 100% — cruise, spin, and search creep.
+# everything runs at 100% — cruise and spin.
 AUTO_BASE_SPEED = 1.0
 AUTO_SPIN_SPEED = 1.0  # spin-in-place speed when adjusting angle
-AUTO_SEARCH_SPEED = 1.0  # creep speed while the line is briefly lost
 # Center box: the line counts as centered while |offset| <= 0.3, i.e.
 # its centroid sits in the middle 30% of the image width (35-65%).
 # The video shows this box in green; the red dot marks the last
@@ -639,7 +639,6 @@ def auto_stop(reason):
 
 def auto_loop():
     """Line-following control loop: ~10 Hz, proportional steering."""
-    lost_since = None
     while True:
         with AUTO_LOCK:
             active = AUTO["active"]
@@ -660,17 +659,12 @@ def auto_loop():
         LAST_DETECT["found"] = found
         LAST_DETECT["offset"] = offset
         if not found:
-            if lost_since is None:
-                lost_since = time.time()
-            if time.time() - lost_since > 2.0:
-                auto_stop("line lost — stopped")
-                continue
-            # Brief loss: creep straight ahead slowly while searching.
-            apply_drive(-AUTO_SEARCH_SPEED, -AUTO_SEARCH_SPEED)
-            auto_set_status(f"line lost? searching… (blue {count}px)")
+            # Line lost: stop right here. No creeping forward to search —
+            # the rover would drive off the line blind.
+            auto_stop("line lost — stopped")
+            continue
         elif abs(offset) <= CENTER_BOX_HALF:
             # Line is inside the center box: drive straight.
-            lost_since = None
             apply_drive(-AUTO_BASE_SPEED, -AUTO_BASE_SPEED)
             auto_set_status("following • in box")
         else:
@@ -678,7 +672,6 @@ def auto_loop():
             # place toward the line until it comes back into the box.
             # Uses the same left/right mapping as the D-pad buttons
             # (confirmed correct), so the turn goes the right way.
-            lost_since = None
             side = "left" if offset < 0 else "right"
             apply_command(side, int(AUTO_SPIN_SPEED * 100))
             auto_set_status(f"adjusting • turning {side}")
