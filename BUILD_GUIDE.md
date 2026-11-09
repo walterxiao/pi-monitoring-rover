@@ -193,7 +193,7 @@ the rover a half-turn in place — tap it once and it turns around by
 itself. Let go of the D-pad first, then tap it; any D-pad button
 cancels the spin mid-turn. The spin is timed, not measured: if it
 turns less than a half-turn, raise `SPIN_180_TIME` in
-`rover_server.py` (seconds at full power, starts at 1.0); if it
+`rover_server.py` (seconds at full power, starts at 2.0); if it
 overshoots, lower it.
 
 Under the hood it's the pattern you already know from `serve.py`
