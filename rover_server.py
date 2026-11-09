@@ -9,9 +9,10 @@ Then on your phone (same Wi-Fi):
 
 The camera video fills the screen. A circular D-pad sits in the lower
 left corner, overlaid on the video: ▲ forward, ▼ reverse, ◀ ▶ spin in
-place (left wheels backward, right wheels forward, or the reverse —
-that's how a 4WD car turns, there's no steering wheel). Hold a button
-to drive, let go to stop. Drive speed is fixed at full (100%).
+place — ◀ is left wheels backward + right wheels forward (turn left),
+▶ is the reverse (turn right). That's how a 4WD car turns, there's
+no steering wheel. Hold a button to drive, let go to stop. Drive
+speed is fixed at full (100%).
 The button in the center of the D-pad (↻ 180°) spins the rover a
 half-turn in place: tap it once and it turns around by itself. Any
 D-pad button cancels the spin mid-turn. The spin is timed, not
@@ -291,10 +292,10 @@ def apply_command(cmd, speed_pct):
             set_motors(-s, -s)
         elif cmd == "back":
             set_motors(s, s)
-        elif cmd == "left":      # spin in place
-            set_motors(-s, s)
-        elif cmd == "right":     # spin in place
-            set_motors(s, -s)
+        elif cmd == "left":      # spin in place: left wheels back,
+            set_motors(s, -s)    # right wheels forward = turn left
+        elif cmd == "right":     # spin in place: left wheels forward,
+            set_motors(-s, s)    # right wheels back = turn right
         elif cmd == "stop":
             stop_all()
         else:

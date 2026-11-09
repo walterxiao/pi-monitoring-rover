@@ -185,10 +185,10 @@ http://<your-pi's-address>:8001
 ```
 
 You'll get the ArduCam video fullscreen, with a circular D-pad at the
-bottom left: ▲ forward, ▼ reverse, ◀ ▶ spin in place (left wheels
-backward, right wheels forward, or the reverse). **Hold** a button to
-move, **let go to stop.** That's how a 4WD car turns, there's no
-steering wheel. The button in the center of the D-pad (↻ 180°) spins
+bottom left: ▲ forward, ▼ reverse, ◀ ▶ spin in place — ◀ is left
+wheels backward + right wheels forward (turn left), ▶ is the reverse
+(turn right). **Hold** a button to move, **let go to stop.** That's
+how a 4WD car turns, there's no steering wheel. The button in the center of the D-pad (↻ 180°) spins
 the rover a half-turn in place — tap it once and it turns around by
 itself. Let go of the D-pad first, then tap it; any D-pad button
 cancels the spin mid-turn. The spin is timed, not measured: if it
