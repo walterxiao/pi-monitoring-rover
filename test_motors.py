@@ -41,8 +41,8 @@ def main():
     input("Wheels in the air and battery box plugged in? Press Enter... ")
     try:
         for label, motor, where in MOTORS:
-            print(f"\n>>> {label} ({where}) spinning SLOWLY for 2 seconds...")
-            motor.throttle = 0.4
+            print(f"\n>>> {label} ({where}) spinning at FULL SPEED for 2 seconds...")
+            motor.throttle = 1.0
             time.sleep(2)
             motor.throttle = None
             answer = input(

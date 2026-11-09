@@ -1,0 +1,14 @@
+[Unit]
+Description=Pi Rover drive server (phone control on port 8001)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=xiao
+WorkingDirectory=/home/xiao/pi-monitoring-rover
+ExecStart=/usr/bin/python3 /home/xiao/pi-monitoring-rover/rover_server.py
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
