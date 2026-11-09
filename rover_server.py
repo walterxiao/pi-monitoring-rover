@@ -12,6 +12,10 @@ left corner, overlaid on the video: ▲ forward, ▼ reverse, ◀ ▶ spin in
 place (left wheels backward, right wheels forward, or the reverse —
 that's how a 4WD car turns, there's no steering wheel). Hold a button
 to drive, let go to stop. Drive speed is fixed at full (100%).
+The button in the center of the D-pad (↻ 180°) spins the rover a
+half-turn in place: tap it once and it turns around by itself. Any
+D-pad button cancels the spin mid-turn. The spin is timed, not
+measured — see SPIN_180_TIME to calibrate how far it turns.
 
 LINE FOLLOWING: tap "🤖 Line Follow" and the rover drives itself along
 a blue tape line on the floor. The camera looks for the blue line in
@@ -132,6 +136,8 @@ PAGE = """<!DOCTYPE html>
   #dpad .down { left: 50%; bottom: 6px; transform: translateX(-50%); }
   #dpad .left { left: 6px; top: 50%; transform: translateY(-50%); }
   #dpad .right { right: 6px; top: 50%; transform: translateY(-50%); }
+  #dpad .spin { left: 50%; top: 50%; transform: translate(-50%, -50%);
+          width: 56px; height: 56px; font-size: 15px; line-height: 1.15; }
   #status { right: 16px; bottom: 12px; font-size: 14px; color: #a0aec0;
            text-shadow: 0 1px 4px rgba(0,0,0,0.8); }
 </style></head>
@@ -149,6 +155,7 @@ PAGE = """<!DOCTYPE html>
     <button class="down" data-cmd="back">&#9660;</button>
     <button class="left" data-cmd="left">&#9664;</button>
     <button class="right" data-cmd="right">&#9654;</button>
+    <button class="spin" id="spinbtn" title="Spin 180°">&#8635;<br>180&deg;</button>
   </div>
   <div id="status" class="overlay"></div>
 <script>
@@ -229,6 +236,15 @@ PAGE = """<!DOCTYPE html>
     b.addEventListener('pointerup', halt);
     b.addEventListener('pointerleave', halt);
     b.addEventListener('pointercancel', halt);
+  });
+  // Center button: spin 180° in place. One tap, the rover turns
+  // around and stops by itself. Any D-pad button cancels it mid-spin.
+  document.getElementById('spinbtn').addEventListener('click', () => {
+    if (autoOn) setAuto(false);
+    if (avoidOn) setAvoid(false);
+    fetch('/spin180', {method: 'POST'})
+      .then(r => r.text()).then(t => status.textContent = t)
+      .catch(() => status.textContent = 'no connection');
   });
   // Camera toggle: off frees the camera for the plant monitor.
   const cam = document.getElementById('cam');
@@ -591,6 +607,13 @@ AUTO_SEARCH_SPEED = 1.0  # creep speed while the line is briefly lost
 # detected line position.
 CENTER_BOX_HALF = 0.3
 LAST_DETECT = {"found": False, "offset": 0.0}
+# 180° spin: how long to spin in place at full power. There is no gyro
+# or encoder feedback, so the turn is timed, not measured — calibrate
+# it by testing: if the rover turns less than a half-turn, raise this
+# number; if it overshoots past facing backward, lower it.
+SPIN_180_TIME = 1.0  # seconds at 100% power
+SPIN = {"active": False, "cancel": False}
+SPIN_LOCK = threading.Lock()
 
 
 def auto_set_status(text):
@@ -734,6 +757,47 @@ def avoid_loop():
             apply_command(side, 100)
             time.sleep(AVOID_TURN_TIME)
             apply_drive(0, 0)
+
+
+def spin_180():
+    """Spin in place for SPIN_180_TIME at full power, then stop.
+    Runs in its own thread; any D-pad press cancels it mid-turn.
+    Direction doesn't matter for a half-turn — it ends facing back
+    either way — so it just uses the same spin as the right button."""
+    with SPIN_LOCK:
+        if SPIN["active"]:
+            return False
+        SPIN["active"] = True
+        SPIN["cancel"] = False
+    # A manual move: stop auto / avoid first, like a D-pad press does.
+    with AUTO_LOCK:
+        auto_was_on = AUTO["active"]
+    if auto_was_on:
+        auto_stop("spin 180")
+    with AVOID_LOCK:
+        avoid_was_on = AVOID["active"]
+    if avoid_was_on:
+        avoid_stop("spin 180")
+    print("spin: 180° turn starting", flush=True)
+    apply_command("right", 100)  # spin in place
+    start = time.time()
+    cancelled = False
+    while time.time() - start < SPIN_180_TIME:
+        with SPIN_LOCK:
+            if SPIN["cancel"]:
+                cancelled = True
+                break
+        # Keep the watchdog fed for the whole spin.
+        with LOCK:
+            STATE["last_cmd_time"] = time.time()
+        time.sleep(0.05)
+    if not cancelled:
+        apply_command("stop", 100)
+    with SPIN_LOCK:
+        SPIN["active"] = False
+    print(f"spin: 180° turn done{' (cancelled)' if cancelled else ''}",
+          flush=True)
+    return True
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -888,10 +952,25 @@ class Handler(BaseHTTPRequestHandler):
             else:
                 self.send_error(404)
             return
+        if self.path.startswith("/spin180"):
+            if not MOTORS_OK:
+                self._reply("motors unavailable — check HAT/I2C on the Pi")
+                return
+            with SPIN_LOCK:
+                already = SPIN["active"]
+            if already:
+                self._reply("already spinning")
+                return
+            threading.Thread(target=spin_180, daemon=True).start()
+            self._reply("spinning 180°…")
+            return
         if not self.path.startswith("/cmd/"):
             self.send_error(404)
             return
         cmd = self.path.split("/")[2].split("?")[0]
+        # Any manual button press cancels a 180° spin mid-turn.
+        with SPIN_LOCK:
+            SPIN["cancel"] = True
         # Any manual button press takes over from auto / avoid instantly.
         with AUTO_LOCK:
             auto_was_on = AUTO["active"]

@@ -188,7 +188,13 @@ You'll get the ArduCam video fullscreen, with a circular D-pad at the
 bottom left: ▲ forward, ▼ reverse, ◀ ▶ spin in place (left wheels
 backward, right wheels forward, or the reverse). **Hold** a button to
 move, **let go to stop.** That's how a 4WD car turns, there's no
-steering wheel.
+steering wheel. The button in the center of the D-pad (↻ 180°) spins
+the rover a half-turn in place — tap it once and it turns around by
+itself. Let go of the D-pad first, then tap it; any D-pad button
+cancels the spin mid-turn. The spin is timed, not measured: if it
+turns less than a half-turn, raise `SPIN_180_TIME` in
+`rover_server.py` (seconds at full power, starts at 1.0); if it
+overshoots, lower it.
 
 Under the hood it's the pattern you already know from `serve.py`
 (Python's built-in web server), just on port 8001 so both can run at
