@@ -619,7 +619,10 @@ LAST_DETECT = {"found": False, "offset": 0.0}
 # or encoder feedback, so the turn is timed, not measured — calibrate
 # it by testing: if the rover turns less than a half-turn, raise this
 # number; if it overshoots past facing backward, lower it.
-SPIN_180_TIME = 2.0  # seconds at 100% power
+SPIN_180_TIME = 1.0  # seconds at 100% power
+# (Was 2.0 while the motor map was wrong and the spin barely moved;
+# with the map fixed the spin is much faster, so 1.0 again. Calibrate
+# by testing: overshoot -> lower, undershoot -> raise.)
 SPIN = {"active": False, "cancel": False}
 SPIN_LOCK = threading.Lock()
 
