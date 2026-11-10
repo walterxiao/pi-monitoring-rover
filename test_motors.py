@@ -4,8 +4,8 @@
 Run this with the rover propped up, ALL WHEELS IN THE AIR:
     python3 test_motors.py
 
-Motor map (matches BUILD_GUIDE.md):
-    M1 = front-left   M2 = rear-left   M3 = front-right   M4 = rear-right
+Motor map (measured Nov 9 with test_motor_map.py):
+    M1 = rear-right   M2 = rear-left   M3 = front-right   M4 = front-left
 
 If a wheel spins backwards (top of wheel moving toward the REAR of the
 car when it should go forward), power off and swap that motor's two
@@ -24,10 +24,10 @@ except ImportError:
 
 kit = MotorKit()
 MOTORS = [
-    ("M1", kit.motor1, "front-left"),
+    ("M1", kit.motor1, "rear-right"),
     ("M2", kit.motor2, "rear-left"),
     ("M3", kit.motor3, "front-right"),
-    ("M4", kit.motor4, "rear-right"),
+    ("M4", kit.motor4, "front-left"),
 ]
 
 

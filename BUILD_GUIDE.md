@@ -88,10 +88,15 @@ one motor's 2 wires (loosen the little screw, push the wire in, tighten).
 
 | Terminal | Motor |
 |---|---|
-| M1 | Front-left (FL) |
+| M1 | Rear-right (RR) |
 | M2 | Rear-left (RL) |
 | M3 | Front-right (FR) |
-| M4 | Rear-right (RR) |
+| M4 | Front-left (FL) |
+
+(This is the measured wiring on this build — found Nov 9 with
+`test_motor_map.py`. The motors are wired rear pair / front pair, not
+left pair / right pair, so don't "fix" the table back to the
+left/right guess.)
 
 **Don't stress about which of a motor's 2 wires goes in which hole.** If a
 wheel spins the wrong way later, the fix is just swapping that motor's two

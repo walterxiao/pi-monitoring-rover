@@ -55,8 +55,9 @@ camera is in use, and it resumes when the camera is released. (Needs a
 sudoers rule so the server may stop/start plant-capture; see
 BUILD_GUIDE.md.)
 
-Motor map (matches BUILD_GUIDE.md):
-    M1 = front-left   M2 = rear-left   M3 = front-right   M4 = rear-right
+Motor map (measured Nov 9 with test_motor_map.py — the motors are
+wired rear pair / front pair, not left pair / right pair):
+    M1 = rear-right   M2 = rear-left   M3 = front-right   M4 = front-left
 
 Same shape as plant-monitor's serve.py (stdlib http.server), on port
 8001 so the plant dashboard (8000) keeps running alongside.
@@ -268,13 +269,19 @@ PAGE = """<!DOCTYPE html>
 
 
 def set_motors(left, right):
-    """left/right: -1.0..1.0 applied to both motors on that side."""
+    """left/right: -1.0..1.0 applied to both motors on that side.
+
+    Motor map, MEASURED Nov 9 with test_motor_map.py (the motors are
+    wired rear pair / front pair, not left pair / right pair):
+        M1 = rear-right   M2 = rear-left
+        M3 = front-right  M4 = front-left
+    """
     if kit is None:
         return
-    kit.motor1.throttle = left    # front-left
     kit.motor2.throttle = left    # rear-left
+    kit.motor4.throttle = left    # front-left
+    kit.motor1.throttle = right   # rear-right
     kit.motor3.throttle = right   # front-right
-    kit.motor4.throttle = right   # rear-right
 
 
 def stop_all():
