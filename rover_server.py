@@ -450,10 +450,19 @@ class CameraManager:
         try:
             from libcamera import controls
             picam.set_controls({
-                "AfMode": controls.AfModeEnum.Continuous,
-                # Cap the frame time at 1/30s: indoors the camera would
-                # otherwise use a slow shutter, and any movement smears.
-                "FrameDurationLimits": (10000, 33333),
+                # Fixed focus: continuous autofocus hunts every time the
+                # rover moves and is slow to re-lock, so the video goes
+                # soft while driving. Lock it at ~0.7 m (LensPosition
+                # is in dioptres: 1 / distance in metres) — that covers
+                # the floor tape just ahead and obstacles a metre or
+                # two out. If the picture is soft, tune this number:
+                # bigger = focuses closer, smaller = focuses farther.
+                "AfMode": controls.AfModeEnum.Manual,
+                "LensPosition": 1.4,
+                # Cap the frame time at 1/60s: at 1/30s any movement
+                # smears. Shorter exposure = sharper while driving;
+                # indoors it costs some brightness / more gain noise.
+                "FrameDurationLimits": (10000, 16666),
             })
         except Exception:
             pass
