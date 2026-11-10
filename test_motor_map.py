@@ -45,7 +45,7 @@ def main():
             motor = getattr(kit, f"motor{i}")
             print(f">>> M{i} spinning for 3 seconds... which wheel moves?",
                   flush=True)
-            motor.throttle = 0.5
+            motor.throttle = 1.0  # full power — half power may not move them
             time.sleep(3)
             motor.throttle = None
             print(f"    M{i} done. (front-left / front-right / "
