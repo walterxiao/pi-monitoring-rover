@@ -326,13 +326,16 @@ the path ahead against the floor color — the floor just under the
 camera is the reference. If the way ahead looks like floor, it keeps
 driving forward; if a chunk of the path ahead doesn't look like
 floor, it spins in place toward the clearer side until the way
-clears. If it's blocked on all sides for 6 seconds straight it stops
-and says "stuck".
+clears. It commits to a turn direction — it won't flip-flop
+left/right — and if a full turn doesn't clear the path it backs up
+for a second to get space and tries turning again. If it's blocked
+on all sides for 10 seconds straight it stops and says "stuck".
 
 **Run it:** on the drive page, tap **🚧 Obstacle Avoid**. The video
 shows a **yellow box** — that's the look-ahead zone it checks. The
 status line tells you what it's doing: `clear (3% ahead) — driving`,
-`blocked (42%) — turning left`, or `stuck — blocked on all sides`.
+`blocked (42%) — turning left`, `backing up`, or
+`stuck — blocked on all sides`.
 Tap the button again to stop, or tap any D-pad button — manual control
 takes over instantly. It won't run at the same time as Line Follow;
 turning one on turns the other off.

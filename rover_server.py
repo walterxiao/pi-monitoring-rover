@@ -37,13 +37,17 @@ own, keeping away from obstacles. It drives continuously — no stopping
 to scan — checking the latest camera frame about 10 times a second
 and comparing the path ahead against the floor color. If the way is
 clear it keeps driving forward; if something is in the way it spins
-toward the clearer side until the way clears. If it's blocked on all
-sides for 6 seconds straight it stops and says "stuck". Same safety
-as line following: any D-pad button takes over instantly, and it
-stops if the page loses contact for 3 seconds. Works best on plain,
-evenly lit floors — a patterned floor, a rug, or a dark shiny object
-can confuse it, and it can't judge exact distance (it turns when an
-obstacle fills the near part of the view).
+toward the clearer side until the way clears. Escape moves are
+committed, never flip-flopped: it keeps turning one way (up to a
+full turn) instead of switching left/right every frame, and if
+turning doesn't clear the path it backs up for a second to get space
+and tries turning again. If it's blocked on all sides for 10 seconds
+straight it stops and says "stuck". Same safety as line following:
+any D-pad button takes over instantly, and it stops if the page
+loses contact for 3 seconds. Works best on plain, evenly lit floors
+— a patterned floor, a rug, or a dark shiny object can confuse it,
+and it can't judge exact distance (it turns when an obstacle fills
+the near part of the view).
 
 The camera is shared: one background thread captures frames, and both
 the video stream and the line follower read the latest frame, so you
@@ -695,9 +699,14 @@ AVOID_LOCK = threading.Lock()
 # Obstacle-avoid settings. The rover drives continuously at full
 # power (low power can't move the loaded rover) — no stopping to
 # scan; each loop checks the latest frame and either drives forward
-# or spins toward the clearer side.
+# or spins toward the clearer side. Escape moves are COMMITTED: once
+# it starts turning one way it keeps turning that way (up to a full
+# turn) instead of flip-flopping; if turning doesn't clear the path
+# it backs up for a second to get space, then tries turning again.
 AVOID_BLOCK_FRAC = 0.15   # non-floor share of the zone that = blocked
-AVOID_STUCK_TIME = 6.0    # seconds blocked in a row = stuck
+AVOID_TURN_COMMIT = 3.0   # seconds to keep turning one way (~full turn)
+AVOID_BACKUP_TIME = 1.0   # seconds to reverse when turning isn't working
+AVOID_STUCK_TIME = 10.0   # seconds blocked in a row = stuck
 
 
 def avoid_set_status(text):
@@ -724,11 +733,19 @@ def avoid_loop():
     """Obstacle-avoid control loop: drives continuously, no stopping
     to scan. Each cycle (~10 Hz) it checks the latest camera frame:
     path clear -> keep driving forward; blocked -> spin in place
-    toward the clearer side. The rover is always moving. If the path
-    stays blocked for AVOID_STUCK_TIME straight (a full turn with
-    nowhere to go), it stops and reports stuck. Runs while
-    AVOID['active'] and the page heartbeat is alive."""
+    toward the clearer side. The rover is always moving. Escape
+    moves are COMMITTED, never flip-flopped: once it starts turning
+    one way it keeps turning that way (up to a full turn); if that
+    doesn't clear the path it backs up for a second to get space,
+    then tries turning again. It never drives straight back into the
+    same obstacle — a back-up always runs to completion and is
+    followed by a turn, not by driving forward. If the path stays
+    blocked for AVOID_STUCK_TIME straight, it stops and reports
+    stuck. Runs while AVOID['active'] and the page heartbeat is alive."""
     blocked_since = None
+    escape_side = None
+    escape_since = None
+    backup_until = 0.0
     while True:
         with AVOID_LOCK:
             active = AVOID["active"]
@@ -740,6 +757,14 @@ def avoid_loop():
             avoid_stop("page gone — avoid stopped")
             time.sleep(0.1)
             continue
+        now = time.time()
+        # A back-up in progress runs to completion — don't let a
+        # clearing frame cut it short and drive back into the obstacle.
+        if now < backup_until:
+            apply_drive(1.0, 1.0)  # reverse
+            avoid_set_status("backing up")
+            time.sleep(0.1)
+            continue
         frame = CAM.get_frame()
         if frame is None:
             time.sleep(0.05)
@@ -747,17 +772,32 @@ def avoid_loop():
         blocked, frac, left_frac, right_frac = floor_obstacle(frame)
         if not blocked:
             blocked_since = None
+            escape_side = None
+            escape_since = None
             avoid_set_status(f"clear ({frac:.0%} ahead) — driving")
             apply_drive(-1.0, -1.0)
         else:
             if blocked_since is None:
-                blocked_since = time.time()
-            if time.time() - blocked_since > AVOID_STUCK_TIME:
+                blocked_since = now
+            if now - blocked_since > AVOID_STUCK_TIME:
                 avoid_stop("stuck — blocked on all sides")
                 continue
-            side = "left" if left_frac <= right_frac else "right"
-            avoid_set_status(f"blocked ({frac:.0%}) — turning {side}")
-            apply_command(side, 100)
+            if escape_side is None:
+                # Commit to the clearer side; don't re-pick every frame.
+                escape_side = "left" if left_frac <= right_frac else "right"
+                escape_since = now
+            elif now - escape_since > AVOID_TURN_COMMIT:
+                # A full turn this way didn't clear the path: back up
+                # for a second to get space, then try turning again.
+                backup_until = now + AVOID_BACKUP_TIME
+                escape_side = None
+                escape_since = None
+                apply_drive(1.0, 1.0)
+                avoid_set_status("backing up")
+                time.sleep(0.1)
+                continue
+            avoid_set_status(f"blocked ({frac:.0%}) — turning {escape_side}")
+            apply_command(escape_side, 100)
         time.sleep(0.1)
 
 
