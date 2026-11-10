@@ -388,8 +388,8 @@ def annotate_frame(frame):
     y0, y1 = int(h * 0.55), int(h * 0.95)
     cv2.rectangle(disp, (x0, y0), (x1, y1), (0, 255, 0), 3)
     if AVOID["active"]:
-        # Look-ahead zone used by obstacle avoid (yellow).
-        ax0, ax1 = int(w * 0.30), int(w * 0.70)
+        # Look-ahead zone used by obstacle avoid (yellow, full width).
+        ax0, ax1 = 0, w
         ay0, ay1 = int(h * 0.35), int(h * 0.92)
         cv2.rectangle(disp, (ax0, ay0), (ax1, ay1), (0, 255, 255), 3)
     if LAST_DETECT["found"]:
@@ -558,7 +558,7 @@ def floor_obstacle(frame):
     ref = np.median(band.reshape(-1, 3), axis=0)
     band_diff = np.abs(band - ref).sum(axis=2)
     thresh = max(90.0, float(np.percentile(band_diff, 95)) * 1.5)
-    x0, x1 = int(w * 0.30), int(w * 0.70)
+    x0, x1 = 0, w  # detection zone spans the full frame width
     y0, y1 = int(h * 0.35), int(h * 0.92)
     zone = frame[y0:y1, x0:x1].astype(np.int16)
     diff = np.abs(zone - ref).sum(axis=2)
