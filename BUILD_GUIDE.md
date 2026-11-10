@@ -351,6 +351,67 @@ a dark shiny object, or a shadow can confuse it (it may turn for no
 reason, or miss a glass or low obstacle). If it turns too
 often, the floor is probably too patterned for this method.
 
+## Phase 9 — Place memory: the rover remembers rooms
+
+The rover can remember what a place looks like and recognize it
+later — no markers, no GPS, just the camera.
+
+**How it works:** when you save a place, it takes the current view
+and stores its visual fingerprint (ORB keypoints — distinctive
+corners and patterns in the image) in a `places/` folder on the Pi,
+not the photo itself. About once a second it compares the live view
+against every saved place and shows the best match at the top-right
+of the drive page ("📍 Kitchen"). A place counts as recognized with
+at least 30 good matches — real matches score in the hundreds.
+
+**Run it:** on the drive page, tap **📍 Save place**. A panel opens
+showing a snapshot of the current view — that's exactly what it will
+remember — type a name and tap **Save**. **📍 Places** lists what
+you've saved, with a **Go** button (drives there, see Phase 10) and
+a ✕ to delete.
+
+**Limits, honestly:** it recognizes a place from a similar angle and
+lighting. A big lighting change, or approaching from the opposite
+side, can miss. If it claims the wrong place, the match threshold
+(`PLACE_MATCH_MIN` in rover_server.py) can be raised; if it misses
+a place it should know, lower it.
+
+## Phase 10 — Routes: the rover drives itself to a place
+
+Places chain together into routes. A route is a destination plus
+steps; each step is a place to find plus a direction to take there
+(turn left, turn right, follow, go straight). Example: Kitchen →
+Piano Room via [find Sofa, turn left] [find Restroom, turn right]
+[follow Hallway].
+
+**How it works:** for each step the rover spins in place in small
+steps, checking each frame, until the step's place is in view — then
+it drives toward it, steering to keep it centered (same idea as line
+following), until the view matches strongly. Then it does the step's
+direction: a turn is a timed spin (90° is about 0.75 s, from the
+180° spin), "follow" means drive forward until the next place
+appears, "straight" means drive forward a couple of seconds. Every
+step starts with a full scan, so a sloppy timed turn can't throw off
+the rest of the route. Obstacle avoid runs during the drive parts —
+if something blocks the way it detours, then looks for the place
+again. If a step's place can't be found after a full spin, it stops
+and says which step failed.
+
+**Run it:** on the drive page, tap **🗺️ Routes**. Saved routes are
+listed with **Go**; below, the builder: name the route, pick the
+destination, add steps (place + direction each), **Save route**. A
+single place needs no route — tap **Go** next to it in 📍 Places.
+While a route runs, a red **■ Stop** button appears top-right; any
+D-pad button also cancels it, and it stops if the page loses contact
+for 3 seconds.
+
+**Limits, honestly:** this only works with line of sight per step —
+the rover can't see around a corner, which is exactly why routes
+exist (each step brings the next place into view). Turns are timed,
+not measured, so a turn may over- or undershoot; the scan at the
+next step corrects it. A motion sensor (MPU6050) would make turns
+exact — a possible later upgrade.
+
 ---
 
 ## Troubleshooting quick table
