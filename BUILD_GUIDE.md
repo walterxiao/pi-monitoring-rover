@@ -320,18 +320,18 @@ The rover can wander a room on its own and steer around obstacles —
 no remote control needed while it's running. It has no depth sensor,
 so it judges obstacles from the camera image alone.
 
-**How it works:** it moves in stop-scan-drive cycles. It stops, waits
-a moment for the camera to settle (a sharp frame, not a blurry one),
-and compares the path ahead against the floor color — the floor just
-under the camera is the reference. If the way ahead looks like floor,
-it drives a short burst forward; if a chunk of the path ahead doesn't
-look like floor, it spins in place toward the clearer side and checks
-again. If it's blocked on all sides after several turns it stops and
-says "stuck".
+**How it works:** it drives continuously — no stopping to scan — and
+checks the latest camera frame about 10 times a second, comparing
+the path ahead against the floor color — the floor just under the
+camera is the reference. If the way ahead looks like floor, it keeps
+driving forward; if a chunk of the path ahead doesn't look like
+floor, it spins in place toward the clearer side until the way
+clears. If it's blocked on all sides for 6 seconds straight it stops
+and says "stuck".
 
 **Run it:** on the drive page, tap **🚧 Obstacle Avoid**. The video
 shows a **yellow box** — that's the look-ahead zone it checks. The
-status line tells you what it's doing: `clear (3% ahead) — moving`,
+status line tells you what it's doing: `clear (3% ahead) — driving`,
 `blocked (42%) — turning left`, or `stuck — blocked on all sides`.
 Tap the button again to stop, or tap any D-pad button — manual control
 takes over instantly. It won't run at the same time as Line Follow;
@@ -344,8 +344,8 @@ can hide under the view. Keep the first run short and watch it.
 
 **Limits, honestly:** it can't judge exact distance — it only knows
 "the path ahead doesn't look like floor". A patterned floor, a rug,
-a dark shiny object, or a shadow can confuse it (it may stop and turn
-for no reason, or miss a glass or low obstacle). If it stops too
+a dark shiny object, or a shadow can confuse it (it may turn for no
+reason, or miss a glass or low obstacle). If it turns too
 often, the floor is probably too patterned for this method.
 
 ---

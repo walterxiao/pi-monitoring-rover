@@ -33,17 +33,17 @@ A watchdog also stops the motors within ~1.5 seconds if commands stop
 arriving, so the rover can never run away on its own.
 
 OBSTACLE AVOID: tap "🚧 Obstacle Avoid" and the rover explores on its
-own, keeping away from obstacles. It works in stop-scan-drive cycles:
-it stops, waits for the camera to settle (a sharp frame, not a blurry
-one), and checks the path ahead by comparing it against the floor
-color. If the way is clear it drives a short burst forward; if
-something is in the way it spins toward the clearer side and checks
-again. If it's blocked on all sides after several turns it stops and
-says "stuck". Same safety as line following: any D-pad button takes
-over instantly, and it stops if the page loses contact for 3 seconds.
-Works best on plain, evenly lit floors — a patterned floor, a rug, or
-a dark shiny object can confuse it, and it can't judge exact distance
-(it stops when an obstacle fills the near part of the view).
+own, keeping away from obstacles. It drives continuously — no stopping
+to scan — checking the latest camera frame about 10 times a second
+and comparing the path ahead against the floor color. If the way is
+clear it keeps driving forward; if something is in the way it spins
+toward the clearer side until the way clears. If it's blocked on all
+sides for 6 seconds straight it stops and says "stuck". Same safety
+as line following: any D-pad button takes over instantly, and it
+stops if the page loses contact for 3 seconds. Works best on plain,
+evenly lit floors — a patterned floor, a rug, or a dark shiny object
+can confuse it, and it can't judge exact distance (it turns when an
+obstacle fills the near part of the view).
 
 The camera is shared: one background thread captures frames, and both
 the video stream and the line follower read the latest frame, so you
@@ -692,14 +692,12 @@ def auto_loop():
 AVOID = {"active": False, "cam": False, "last_ping": 0.0,
          "status": "avoid off"}
 AVOID_LOCK = threading.Lock()
-# Obstacle-avoid settings. The rover moves in short bursts at full
-# power (low power can't move the loaded rover), stopping to scan with
-# a sharp frame between bursts.
-AVOID_DRIVE_TIME = 0.5    # seconds of forward driving per scan cycle
-AVOID_SETTLE_TIME = 0.3   # seconds stopped before a scan (blur settles)
-AVOID_TURN_TIME = 0.5     # seconds of spin per avoidance turn
+# Obstacle-avoid settings. The rover drives continuously at full
+# power (low power can't move the loaded rover) — no stopping to
+# scan; each loop checks the latest frame and either drives forward
+# or spins toward the clearer side.
 AVOID_BLOCK_FRAC = 0.15   # non-floor share of the zone that = blocked
-AVOID_STUCK_TURNS = 6     # turns in a row without moving = stuck
+AVOID_STUCK_TIME = 6.0    # seconds blocked in a row = stuck
 
 
 def avoid_set_status(text):
@@ -723,10 +721,14 @@ def avoid_stop(reason):
 
 
 def avoid_loop():
-    """Obstacle-avoid control loop: stop, let the camera settle, scan
-    the path ahead, then drive a short burst or spin toward the clearer
-    side. Runs while AVOID['active'] and the page heartbeat is alive."""
-    turns = 0
+    """Obstacle-avoid control loop: drives continuously, no stopping
+    to scan. Each cycle (~10 Hz) it checks the latest camera frame:
+    path clear -> keep driving forward; blocked -> spin in place
+    toward the clearer side. The rover is always moving. If the path
+    stays blocked for AVOID_STUCK_TIME straight (a full turn with
+    nowhere to go), it stops and reports stuck. Runs while
+    AVOID['active'] and the page heartbeat is alive."""
+    blocked_since = None
     while True:
         with AVOID_LOCK:
             active = AVOID["active"]
@@ -738,30 +740,25 @@ def avoid_loop():
             avoid_stop("page gone — avoid stopped")
             time.sleep(0.1)
             continue
-        # Stop and let the camera settle so the scan uses a sharp frame.
-        apply_drive(0, 0)
-        time.sleep(AVOID_SETTLE_TIME)
         frame = CAM.get_frame()
         if frame is None:
-            time.sleep(0.1)
+            time.sleep(0.05)
             continue
         blocked, frac, left_frac, right_frac = floor_obstacle(frame)
         if not blocked:
-            turns = 0
-            avoid_set_status(f"clear ({frac:.0%} ahead) — moving")
+            blocked_since = None
+            avoid_set_status(f"clear ({frac:.0%} ahead) — driving")
             apply_drive(-1.0, -1.0)
-            time.sleep(AVOID_DRIVE_TIME)
-            apply_drive(0, 0)
         else:
-            turns += 1
-            if turns >= AVOID_STUCK_TURNS:
+            if blocked_since is None:
+                blocked_since = time.time()
+            if time.time() - blocked_since > AVOID_STUCK_TIME:
                 avoid_stop("stuck — blocked on all sides")
                 continue
             side = "left" if left_frac <= right_frac else "right"
             avoid_set_status(f"blocked ({frac:.0%}) — turning {side}")
             apply_command(side, 100)
-            time.sleep(AVOID_TURN_TIME)
-            apply_drive(0, 0)
+        time.sleep(0.1)
 
 
 def spin_180():
