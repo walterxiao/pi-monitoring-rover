@@ -33,47 +33,38 @@ A watchdog also stops the motors within ~1.5 seconds if commands stop
 arriving, so the rover can never run away on its own.
 
 OBSTACLE AVOID: tap "🚧 Obstacle Avoid" and the rover explores on its
-own, keeping away from obstacles. It drives continuously — no stopping
-to scan — checking the latest camera frame about 10 times a second
-and comparing the path ahead against the floor color. If the way is
-clear it keeps driving forward; if something is in the way it spins
-toward the clearer side until the way clears. Escape moves are
-committed, never flip-flopped: it keeps turning one way (up to a
-full turn) instead of switching left/right every frame, and if
+own, keeping away from obstacles. The TF-Luna LiDAR measures the
+distance straight ahead about 100 times a second: clear (over 0.5 m)
+it keeps driving forward; blocked (under 0.5 m) it spins toward the
+clearer side, using the camera's floor check to pick the side; too
+close (under 0.25 m) it backs up for space instead of turning. If the
+LiDAR is offline the loop falls back to the camera-only floor-color
+logic, so the mode still works with the sensor unplugged. Escape
+moves are committed, never flip-flopped: it keeps turning one way (up
+to a full turn) instead of switching left/right every frame, and if
 turning doesn't clear the path it backs up for a second to get space
 and tries turning again. If it's blocked on all sides for 10 seconds
 straight it stops and says "stuck". Same safety as line following:
 any D-pad button takes over instantly, and it stops if the page
-loses contact for 3 seconds. Works best on plain, evenly lit floors
-— a patterned floor, a rug, or a dark shiny object can confuse it,
-and it can't judge exact distance (it turns when an obstacle fills
-the near part of the view).
+loses contact for 3 seconds. The drive page also shows a bird's-eye
+radar view (top right): the rover in the middle, recent distance
+readings plotted around it. The radar is rough — there is no gyro or
+position tracking, so the picture is only good for a few seconds
+while the rover turns or sits still.
 
-PLACE MEMORY: tap "📍 Save place" and give the current view a name
-("Kitchen", "Charging spot") — the rover saves the visual fingerprint
-of what it sees (ORB keypoints, not the photo itself) in a places/
-folder on the Pi. About once a second it compares the live view
-against every saved place and shows the best match at the top of the
-page ("📍 Kitchen"). It recognizes a place from a similar angle and
-lighting; a big lighting change or approaching from the opposite
-side can miss. "Go to a place" (driving toward a remembered view)
-is a later step — this version only remembers and recognizes.
-
-ROUTES ("GO TO A PLACE"): places chain together into routes. A route
-is a destination plus steps; each step is a place to find plus a
-direction to take there (turn left, turn right, follow, go straight).
-Example: Kitchen -> Piano Room via [find Sofa, turn left] [find
-Restroom, turn right] [follow Hallway]. The rover runs each step by
-spinning to scan for the step's place, driving toward it until the
-view matches strongly, doing the direction, then moving to the next
-step; finally it finds the destination and stops there. Every step
-starts with a full scan, so a sloppy timed turn can't throw off the
-rest of the route. If a step's place can't be found after a full
-spin, it stops and says which step failed. Turns are timed (a 90°
-turn is about 0.75 s at full power, from the 180° spin), not
-measured — an IMU would make them exact. Same safety as line
-following: any D-pad button cancels, and it stops if the page
-loses contact for 3 seconds. Routes live in routes.json on the Pi.
+SIGNS: draw a sign on paper (an arrow, a shape, a symbol — anything
+distinctive) and tape it where the rover should act. Drive the rover
+up to it, tap "🪧 Record sign", and give it a name plus the
+instruction it means (turn left, turn right, go straight, back up,
+stop). The rover saves the sign's visual fingerprint (ORB keypoints,
+not the photo itself) plus how big it looked in the frame, in a
+signs/ folder on the Pi. Then tap "🪧 Follow signs": the rover drives
+forward on its own, and when it sees a sign at about the recorded
+size it runs that sign's instruction. Size is the trigger distance —
+a sign only fires when it looks about as big as when you recorded
+it, so the rover acts at the right spot, not from across the room.
+Same safety as the other modes: any D-pad button cancels, and it
+stops if the page loses contact for 3 seconds.
 
 The camera is shared: one background thread captures frames, and both
 the video stream and the line follower read the latest frame, so you
@@ -149,6 +140,17 @@ PAGE = """<!DOCTYPE html>
   #camtoggle { top: 10px; right: 12px; font-size: 16px; padding: 8px 14px;
            border-radius: 20px; border: none;
            background: rgba(45,55,72,0.8); color: #fff; }
+  #stabtoggle { top: 94px; right: 12px; font-size: 16px; padding: 8px 14px;
+           border-radius: 20px; border: none;
+           background: rgba(45,55,72,0.8); color: #fff; }
+  #stabtoggle.on { background: rgba(56,161,105,0.9); }
+  #radartoggle { top: 136px; right: 12px; font-size: 16px; padding: 8px 14px;
+           border-radius: 20px; border: none;
+           background: rgba(45,55,72,0.8); color: #fff; }
+  #radartoggle.on { background: rgba(56,161,105,0.9); }
+  #radar { top: 178px; right: 12px; width: 200px; height: 200px;
+           border-radius: 12px; background: rgba(0,0,0,0.55);
+           pointer-events: none; }
   #autotoggle { top: 52px; left: 16px; font-size: 16px; padding: 8px 14px;
            border-radius: 20px; border: none;
            background: rgba(45,55,72,0.8); color: #fff; }
@@ -157,27 +159,24 @@ PAGE = """<!DOCTYPE html>
            border-radius: 20px; border: none;
            background: rgba(45,55,72,0.8); color: #fff; }
   #avoidtoggle.on { background: rgba(56,161,105,0.9); }
-  #placetoggle { top: 136px; left: 16px; font-size: 16px; padding: 8px 14px;
+  #signtoggle { top: 136px; left: 16px; font-size: 16px; padding: 8px 14px;
            border-radius: 20px; border: none;
            background: rgba(45,55,72,0.8); color: #fff; }
-  #placelistbtn { top: 178px; left: 16px; font-size: 16px; padding: 8px 14px;
+  #signtoggle.on { background: rgba(56,161,105,0.9); }
+  #signrecordbtn { top: 178px; left: 16px; font-size: 16px; padding: 8px 14px;
            border-radius: 20px; border: none;
            background: rgba(45,55,72,0.8); color: #fff; }
-  #routetoggle { top: 220px; left: 16px; font-size: 16px; padding: 8px 14px;
+  #signlistbtn { top: 220px; left: 16px; font-size: 16px; padding: 8px 14px;
            border-radius: 20px; border: none;
            background: rgba(45,55,72,0.8); color: #fff; }
-  #gotostop { top: 94px; right: 12px; font-size: 16px; padding: 8px 14px;
-           border-radius: 20px; border: none; display: none;
-           background: rgba(197,48,48,0.9); color: #fff; }
-  #place { top: 52px; right: 12px; font-size: 16px; font-weight: 600;
+  #sign { top: 52px; right: 12px; font-size: 16px; font-weight: 600;
            text-shadow: 0 1px 4px rgba(0,0,0,0.8); }
-  #placespanel { top: 262px; left: 16px; font-size: 16px;
+  #signspanel { top: 262px; left: 16px; font-size: 16px;
            background: rgba(0,0,0,0.65); border-radius: 12px;
            padding: 10px 12px; display: none; max-width: 70vw; }
-  #placespanel button { margin-left: 8px; font-size: 14px;
+  #signspanel button { margin-left: 8px; font-size: 14px;
            border-radius: 10px; border: none;
            background: rgba(197,48,48,0.85); color: #fff; padding: 2px 8px; }
-  #placespanel button[data-go] { background: rgba(43,108,176,0.9); }
   .panel { top: 50%; left: 50%; transform: translate(-50%, -50%);
            width: 86vw; max-width: 420px; max-height: 72vh; overflow: auto;
            background: rgba(20,24,32,0.96); border-radius: 14px;
@@ -193,9 +192,7 @@ PAGE = """<!DOCTYPE html>
   .panel button.ghost { background: rgba(74,85,104,0.9); }
   .panel .row { display: flex; gap: 6px; align-items: center; }
   .panel .row select { flex: 1; }
-  .panel .routeitem { padding: 8px 0;
-           border-bottom: 1px solid rgba(255,255,255,0.12); }
-  #placeshot { width: 100%; border-radius: 10px; margin: 4px 0; }
+  #signshot { width: 100%; border-radius: 10px; margin: 4px 0; }
   #camerr { top: 50%; left: 50%; transform: translate(-50%, -50%);
            color: #fc8181; font-size: 18px; text-align: center;
            text-shadow: 0 1px 4px rgba(0,0,0,0.8); display: none; }
@@ -221,37 +218,32 @@ PAGE = """<!DOCTYPE html>
        onerror="document.getElementById('camerr').style.display='block'">
   <div id="title" class="overlay">\U0001F916 Pi Rover</div>
   <button id="camtoggle" class="overlay">\U0001F4F7 Camera: On</button>
+  <button id="stabtoggle" class="overlay">\U0001F4F9 Stabilize: On</button>
+  <button id="radartoggle" class="overlay">\U0001F4E1 Radar: On</button>
+  <canvas id="radar" class="overlay" width="200" height="200"></canvas>
   <button id="autotoggle" class="overlay">\U0001F916 Line Follow: Off</button>
   <button id="avoidtoggle" class="overlay">\U0001F6A7 Obstacle Avoid: Off</button>
-  <button id="placetoggle" class="overlay">\U0001F4CD Save place</button>
-  <button id="placelistbtn" class="overlay">\U0001F4CD Places</button>
-  <button id="routetoggle" class="overlay">\U0001F5FA Routes</button>
-  <button id="gotostop" class="overlay">&#9632; Stop</button>
-  <div id="place" class="overlay">\U0001F4CD &mdash;</div>
-  <div id="placespanel" class="overlay"></div>
+  <button id="signtoggle" class="overlay">\U0001FAA7 Follow signs: Off</button>
+  <button id="signrecordbtn" class="overlay">\U0001FAA7 Record sign</button>
+  <button id="signlistbtn" class="overlay">\U0001FAA7 Signs</button>
+  <div id="sign" class="overlay">\U0001FAA7 &mdash;</div>
+  <div id="signspanel" class="overlay"></div>
   <div id="capturepanel" class="overlay panel">
-    <h3>\U0001F4CD Save this place</h3>
-    <img id="placeshot" alt="Current view">
-    <input id="placename" type="text" placeholder="Place name" maxlength="30">
+    <h3>\U0001FAA7 Record this sign</h3>
+    <img id="signshot" alt="Current view">
+    <input id="signname" type="text" placeholder="Sign name" maxlength="30">
+    <div>Instruction:</div>
+    <select id="signinstruction">
+      <option value="left">Turn left</option>
+      <option value="right">Turn right</option>
+      <option value="straight">Go straight</option>
+      <option value="back">Back up</option>
+      <option value="stop">Stop</option>
+    </select>
     <div>
-      <button id="placesave">Save</button>
-      <button id="placeretake" class="ghost">Retake</button>
-      <button id="placeclose" class="ghost">Close</button>
-    </div>
-  </div>
-  <div id="routepanel" class="overlay panel">
-    <h3>\U0001F5FA Routes</h3>
-    <div id="routelist"></div>
-    <h3 style="margin-top:14px">New route</h3>
-    <input id="routename" type="text" placeholder="Route name" maxlength="30">
-    <div>Destination:</div>
-    <select id="routedest"></select>
-    <div>Steps (place + direction):</div>
-    <div id="routesteps"></div>
-    <div>
-      <button id="routeaddstep" class="ghost">+ Add step</button>
-      <button id="routesave">Save route</button>
-      <button id="routeclose" class="ghost">Close</button>
+      <button id="signsave">Save</button>
+      <button id="signretake" class="ghost">Retake</button>
+      <button id="signclose" class="ghost">Close</button>
     </div>
   </div>
   <div id="camerr" class="overlay">Camera unavailable &mdash; check the Pi
@@ -291,7 +283,7 @@ PAGE = """<!DOCTYPE html>
     autotoggle.classList.toggle('on', on);
     if (on) {
       if (avoidOn) setAvoid(false);
-      showGotoStop(false);
+      setSignFollow(false);
       fetch('/auto/on', {method: 'POST'})
         .then(r => r.text()).then(t => status.textContent = t);
       autoTimer = setInterval(() => {
@@ -316,7 +308,7 @@ PAGE = """<!DOCTYPE html>
     avoidtoggle.classList.toggle('on', on);
     if (on) {
       if (autoOn) setAuto(false);
-      showGotoStop(false);
+      setSignFollow(false);
       fetch('/avoid/on', {method: 'POST'})
         .then(r => r.text()).then(t => status.textContent = t);
       avoidTimer = setInterval(() => {
@@ -339,7 +331,7 @@ PAGE = """<!DOCTYPE html>
       e.preventDefault();
       if (autoOn) setAuto(false);
       if (avoidOn) setAvoid(false);
-      showGotoStop(false);
+      setSignFollow(false);
       start(cmd);
     });
     b.addEventListener('pointerup', halt);
@@ -351,7 +343,7 @@ PAGE = """<!DOCTYPE html>
   document.getElementById('spinbtn').addEventListener('click', () => {
     if (autoOn) setAuto(false);
     if (avoidOn) setAvoid(false);
-    showGotoStop(false);
+    setSignFollow(false);
     fetch('/spin180', {method: 'POST'})
       .then(r => r.text()).then(t => status.textContent = t)
       .catch(() => status.textContent = 'no connection');
@@ -370,240 +362,209 @@ PAGE = """<!DOCTYPE html>
       camtoggle.textContent = '\U0001F4F7 Camera: Off';
     }
   });
-  // Place memory: save the current view under a name, and show the
-  // place the rover thinks it is in (checked every 2 s).
-  const placeEl = document.getElementById('place');
-  const placesPanel = document.getElementById('placespanel');
-  function refreshPlace() {
-    fetch('/place/current')
+  // Stabilize toggle: smooths the shaky drive video (on by default).
+  const stabtoggle = document.getElementById('stabtoggle');
+  let stabOn = true;
+  stabtoggle.classList.toggle('on', true);
+  stabtoggle.addEventListener('click', () => {
+    stabOn = !stabOn;
+    stabtoggle.textContent = '\U0001F4F9 Stabilize: ' + (stabOn ? 'On' : 'Off');
+    stabtoggle.classList.toggle('on', stabOn);
+    fetch('/stabilize/' + (stabOn ? 'on' : 'off'), {method: 'POST'})
+      .then(r => r.text()).then(t => status.textContent = t)
+      .catch(() => status.textContent = 'no connection');
+  });
+  // Signs: record the sign in view under a name + instruction, and
+  // show the sign the rover thinks it sees (checked every 2 s).
+  const signEl = document.getElementById('sign');
+  const signsPanel = document.getElementById('signspanel');
+  function refreshSign() {
+    fetch('/sign/current')
       .then(r => r.text())
-      .then(t => placeEl.textContent = t ? '\U0001F4CD ' + t : '\U0001F4CD —')
+      .then(t => signEl.textContent = t ? '\U0001FAA7 ' + t : '\U0001FAA7 —')
       .catch(() => {});
   }
-  setInterval(refreshPlace, 2000);
-  refreshPlace();
+  setInterval(refreshSign, 2000);
+  refreshSign();
   // Capture panel: shows a snapshot of the current view so you can
-  // see exactly what you are saving, then names the place.
+  // see exactly what you are recording, then names the sign and
+  // picks its instruction.
   const capturePanel = document.getElementById('capturepanel');
-  const placeshot = document.getElementById('placeshot');
-  const placename = document.getElementById('placename');
+  const signshot = document.getElementById('signshot');
+  const signname = document.getElementById('signname');
+  const signinstruction = document.getElementById('signinstruction');
   function loadSnapshot() {
-    placeshot.src = '/snapshot?' + Date.now();
+    signshot.src = '/snapshot?' + Date.now();
   }
-  document.getElementById('placetoggle').addEventListener('click', () => {
+  document.getElementById('signrecordbtn').addEventListener('click', () => {
     capturePanel.style.display = 'block';
-    placename.value = '';
+    signname.value = '';
     loadSnapshot();
   });
-  document.getElementById('placeretake').addEventListener('click', loadSnapshot);
-  document.getElementById('placeclose').addEventListener('click', () => {
+  document.getElementById('signretake').addEventListener('click', loadSnapshot);
+  document.getElementById('signclose').addEventListener('click', () => {
     capturePanel.style.display = 'none';
   });
-  document.getElementById('placesave').addEventListener('click', () => {
-    const name = placename.value.trim();
-    if (!name) { status.textContent = 'type a name for this place first'; return; }
-    fetch('/place/save?name=' + encodeURIComponent(name), {method: 'POST'})
+  document.getElementById('signsave').addEventListener('click', () => {
+    const name = signname.value.trim();
+    if (!name) { status.textContent = 'type a name for this sign first'; return; }
+    fetch('/sign/save?name=' + encodeURIComponent(name) +
+          '&instruction=' + encodeURIComponent(signinstruction.value),
+          {method: 'POST'})
       .then(r => r.text()).then(t => {
         status.textContent = t;
         capturePanel.style.display = 'none';
-        refreshPlace();
+        refreshSign();
       })
       .catch(() => status.textContent = 'no connection');
   });
-  document.getElementById('placelistbtn').addEventListener('click', () => {
-    if (placesPanel.style.display === 'block') {
-      placesPanel.style.display = 'none';
+  document.getElementById('signlistbtn').addEventListener('click', () => {
+    if (signsPanel.style.display === 'block') {
+      signsPanel.style.display = 'none';
       return;
     }
-    fetch('/places')
+    fetch('/signs')
       .then(r => r.text())
       .then(t => {
-        const names = t.split('\\n').filter(Boolean);
-        placesPanel.innerHTML = names.length
-          ? names.map(n => {
-              const name = n.substring(0, n.lastIndexOf(' ('));
+        const lines = t.split('\\n').filter(Boolean);
+        signsPanel.innerHTML = lines.length
+          ? lines.map(n => {
+              const name = n.substring(0, n.lastIndexOf(' →'));
               return '<div>' + n +
-                ' <button data-go="' + name + '">Go</button>' +
                 ' <button data-name="' + name + '">✕</button></div>';
             }).join('')
-          : 'No places saved yet.';
-        placesPanel.style.display = 'block';
-        placesPanel.querySelectorAll('button[data-go]').forEach(b => {
+          : 'No signs saved yet.';
+        signsPanel.style.display = 'block';
+        signsPanel.querySelectorAll('button[data-name]').forEach(b => {
           b.addEventListener('click', () => {
-            placesPanel.style.display = 'none';
-            startGotoPlace(b.dataset.go);
-          });
-        });
-        placesPanel.querySelectorAll('button[data-name]').forEach(b => {
-          b.addEventListener('click', () => {
-            fetch('/place/delete?name=' + encodeURIComponent(b.dataset.name),
+            fetch('/sign/delete?name=' + encodeURIComponent(b.dataset.name),
                   {method: 'POST'})
               .then(r => r.text()).then(t => {
                 status.textContent = t;
-                placesPanel.style.display = 'none';
-                refreshPlace();
+                signsPanel.style.display = 'none';
+                refreshSign();
               });
           });
         });
       })
       .catch(() => status.textContent = 'no connection');
   });
-  // Routes panel: list saved routes with Go, and a builder that
-  // chains places with a direction per step.
-  const routePanel = document.getElementById('routepanel');
-  const routeList = document.getElementById('routelist');
-  const routeDest = document.getElementById('routedest');
-  const routeSteps = document.getElementById('routesteps');
-  function placeNames(listText) {
-    return listText.split('\\n').filter(Boolean).map(function(n) {
-      return n.substring(0, n.lastIndexOf(' ('));
-    });
-  }
-  function loadPlaceNames(cb) {
-    fetch('/places').then(function(r) { return r.text(); })
-      .then(function(t) { cb(placeNames(t)); })
-      .catch(function() { cb([]); });
-  }
-  function fillPlaceSelects(names) {
-    const opts = names.map(function(n) {
-      return '<option value="' + n + '">' + n + '</option>';
-    }).join('');
-    const destCur = routeDest.value;
-    routeDest.innerHTML = opts;
-    if (destCur) routeDest.value = destCur;
-    routeSteps.querySelectorAll('.step-place').forEach(function(s) {
-      const cur = s.value;
-      s.innerHTML = opts;
-      if (cur) s.value = cur;
-    });
-  }
-  function renderRoutes() {
-    fetch('/routes').then(function(r) { return r.json(); })
-      .then(function(data) {
-        const routes = data.routes || [];
-        routeList.innerHTML = routes.length ? routes.map(function(rt) {
-          return '<div class="routeitem">' + rt.name + ' &rarr; ' +
-            rt.destination + ' (' + rt.steps.length + ' steps)' +
-            ' <button data-goto="' + rt.name + '">Go</button>' +
-            ' <button class="danger" data-delroute="' + rt.name + '">✕</button></div>';
-        }).join('') : 'No routes yet. Build one below.';
-        routeList.querySelectorAll('[data-goto]').forEach(function(b) {
-          b.addEventListener('click', function() {
-            startGoto('/goto/route?name=' + encodeURIComponent(b.dataset.goto));
-          });
-        });
-        routeList.querySelectorAll('[data-delroute]').forEach(function(b) {
-          b.addEventListener('click', function() {
-            fetch('/route/delete?name=' + encodeURIComponent(b.dataset.delroute),
-                  {method: 'POST'})
-              .then(function(r) { return r.text(); })
-              .then(function(t) { status.textContent = t; renderRoutes(); });
-          });
-        });
-      })
-      .catch(function() { status.textContent = 'no connection'; });
-  }
-  function stepRowHTML() {
-    return '<div class="row step">' +
-      '<select class="step-place"></select>' +
-      '<select class="step-action">' +
-        '<option value="left">Turn left</option>' +
-        '<option value="right">Turn right</option>' +
-        '<option value="follow">Follow</option>' +
-        '<option value="straight">Go straight</option>' +
-      '</select>' +
-      '<button class="danger step-del">✕</button></div>';
-  }
-  document.getElementById('routetoggle').addEventListener('click', () => {
-    if (routePanel.style.display === 'block') {
-      routePanel.style.display = 'none';
-      return;
+  // Follow-signs toggle. Same heartbeat pattern as line follow and
+  // obstacle avoid: the rover drives forward and runs a sign's
+  // instruction when it sees one at about the recorded size.
+  const signtoggle = document.getElementById('signtoggle');
+  let signOn = false;
+  let signTimer = null;
+  function setSignFollow(on) {
+    if (on === signOn) return;
+    signOn = on;
+    signtoggle.textContent = '\U0001FAA7 Follow signs: ' + (on ? 'On' : 'Off');
+    signtoggle.classList.toggle('on', on);
+    if (on) {
+      if (autoOn) setAuto(false);
+      if (avoidOn) setAvoid(false);
+      fetch('/sign/on', {method: 'POST'})
+        .then(r => r.text()).then(t => status.textContent = t);
+      signTimer = setInterval(() => {
+        fetch('/sign/ping', {method: 'POST'})
+          .then(r => r.text()).then(t => status.textContent = t)
+          .catch(() => { setSignFollow(false); status.textContent = 'no connection'; });
+      }, 1000);
+    } else {
+      if (signTimer) { clearInterval(signTimer); signTimer = null; }
+      fetch('/sign/off', {method: 'POST'})
+        .then(r => r.text()).then(t => status.textContent = t);
     }
-    routePanel.style.display = 'block';
-    renderRoutes();
-    loadPlaceNames(fillPlaceSelects);
+  }
+  signtoggle.addEventListener('click', () => setSignFollow(!signOn));
+  // Radar: bird's-eye view from the TF-Luna. The rover sits in the
+  // middle pointing up; each dot is a recent distance reading,
+  // plotted where it was taken. Dots fade after a few seconds —
+  // there is no position tracking, so the picture is only good
+  // while the rover turns in place or sits still.
+  const radar = document.getElementById('radar');
+  const rctx = radar.getContext('2d');
+  const radartoggle = document.getElementById('radartoggle');
+  let radarOn = true;
+  radartoggle.addEventListener('click', () => {
+    radarOn = !radarOn;
+    radartoggle.textContent = '\U0001F4E1 Radar: ' + (radarOn ? 'On' : 'Off');
+    radartoggle.classList.toggle('on', radarOn);
+    radar.style.display = radarOn ? 'block' : 'none';
   });
-  document.getElementById('routeclose').addEventListener('click', () => {
-    routePanel.style.display = 'none';
-  });
-  document.getElementById('routeaddstep').addEventListener('click', () => {
-    routeSteps.insertAdjacentHTML('beforeend', stepRowHTML());
-    loadPlaceNames(fillPlaceSelects);
-  });
-  routeSteps.addEventListener('click', (e) => {
-    if (e.target.classList.contains('step-del')) {
-      e.target.closest('.step').remove();
-    }
-  });
-  document.getElementById('routesave').addEventListener('click', () => {
-    const name = document.getElementById('routename').value.trim();
-    const dest = routeDest.value;
-    const steps = [];
-    routeSteps.querySelectorAll('.step').forEach(function(row) {
-      steps.push({
-        place: row.querySelector('.step-place').value,
-        action: row.querySelector('.step-action').value
+  radartoggle.classList.toggle('on', true);
+  const RADAR_MAX_M = 3.0;   // edge of the circle = 3 m
+  function drawRadar(data) {
+    const W = radar.width, H = radar.height, cx = W / 2, cy = H / 2;
+    const R = 92;            // pixels to the 3 m ring
+    rctx.clearRect(0, 0, W, H);
+    rctx.strokeStyle = 'rgba(255,255,255,0.25)';
+    rctx.lineWidth = 1;
+    [1, 2, 3].forEach(m => {
+      rctx.beginPath();
+      rctx.arc(cx, cy, R * m / RADAR_MAX_M, 0, 2 * Math.PI);
+      rctx.stroke();
+    });
+    rctx.fillStyle = 'rgba(255,255,255,0.5)';
+    rctx.font = '10px sans-serif';
+    rctx.fillText('1m', cx + 3, cy - R / 3 + 3);
+    rctx.fillText('2m', cx + 3, cy - 2 * R / 3 + 3);
+    rctx.fillText('3m', cx + 3, cy - R + 10);
+    if (!data || !data.online) {
+      rctx.fillStyle = '#fc8181';
+      rctx.font = '13px sans-serif';
+      rctx.textAlign = 'center';
+      rctx.fillText('LiDAR offline', cx, cy + 30);
+      rctx.font = '11px sans-serif';
+      rctx.fillText((data && data.error) || 'no data', cx, cy + 48);
+      rctx.textAlign = 'left';
+    } else {
+      const heading = data.heading || 0;
+      (data.trail || []).forEach(pt => {
+        // Heading grows counterclockwise (left turns add), so the
+        // screen x flips: a point to the rover's left plots left.
+        const rel = (pt[0] - heading) * Math.PI / 180;
+        const d = Math.min(pt[1], RADAR_MAX_M);
+        const r = R * d / RADAR_MAX_M;
+        const x = cx - r * Math.sin(rel);
+        const y = cy - r * Math.cos(rel);
+        const alpha = Math.max(0.15, 1 - pt[2] / 8);
+        rctx.fillStyle = 'rgba(252,211,77,' + alpha.toFixed(2) + ')';
+        rctx.beginPath();
+        rctx.arc(x, y, 3, 0, 2 * Math.PI);
+        rctx.fill();
       });
-    });
-    if (!name) { status.textContent = 'give the route a name first'; return; }
-    if (!dest) { status.textContent = 'pick a destination first'; return; }
-    fetch('/route/save', {method: 'POST',
-      headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({name: name, destination: dest, steps: steps})})
-      .then(function(r) { return r.text(); })
-      .then(function(t) {
-        status.textContent = t;
-        document.getElementById('routename').value = '';
-        routeSteps.innerHTML = '';
-        renderRoutes();
-      })
-      .catch(function() { status.textContent = 'no connection'; });
-  });
-  // Go-to: start a route (or a single place), heartbeat while it
-  // runs, Stop button to cancel. Any D-pad press cancels too.
-  const gotostop = document.getElementById('gotostop');
-  let gotoTimer = null;
-  function showGotoStop(on) {
-    gotostop.style.display = on ? 'block' : 'none';
-    if (!on && gotoTimer) { clearInterval(gotoTimer); gotoTimer = null; }
+      if (data.dist_m !== null && data.dist_m !== undefined) {
+        const d = Math.min(data.dist_m, RADAR_MAX_M);
+        const r = R * d / RADAR_MAX_M;
+        rctx.fillStyle = '#48bb78';
+        rctx.beginPath();
+        rctx.arc(cx, cy - r, 5, 0, 2 * Math.PI);
+        rctx.fill();
+        rctx.fillStyle = '#fff';
+        rctx.font = '13px sans-serif';
+        rctx.textAlign = 'center';
+        rctx.fillText(data.dist_m.toFixed(2) + ' m', cx, cy + 30);
+        rctx.textAlign = 'left';
+      }
+    }
+    rctx.fillStyle = '#4299e1';
+    rctx.beginPath();
+    rctx.moveTo(cx, cy - 10);
+    rctx.lineTo(cx - 7, cy + 8);
+    rctx.lineTo(cx + 7, cy + 8);
+    rctx.closePath();
+    rctx.fill();
   }
-  function startGoto(url) {
-    if (autoOn) setAuto(false);
-    if (avoidOn) setAvoid(false);
-    fetch(url, {method: 'POST'})
-      .then(function(r) { return r.text(); })
-      .then(function(t) {
-        status.textContent = t;
-        if (t.indexOf('going to') === 0) {
-          routePanel.style.display = 'none';
-          placesPanel.style.display = 'none';
-          showGotoStop(true);
-          gotoTimer = setInterval(function() {
-            fetch('/goto/ping', {method: 'POST'})
-              .then(function(r) { return r.text(); })
-              .then(function(s) {
-                status.textContent = s;
-                return fetch('/goto/active');
-              })
-              .then(function(r) { return r.text(); })
-              .then(function(a) { if (a !== '1') showGotoStop(false); })
-              .catch(function() {
-                showGotoStop(false);
-                status.textContent = 'no connection';
-              });
-          }, 1000);
-        }
-      })
-      .catch(function() { status.textContent = 'no connection'; });
+  function refreshRadar() {
+    if (!radarOn) return;
+    fetch('/lidar')
+      .then(r => r.json())
+      .then(drawRadar)
+      .catch(() => drawRadar(null));
   }
-  function startGotoPlace(name) {
-    startGoto('/goto/place?name=' + encodeURIComponent(name));
-  }
-  gotostop.addEventListener('click', () => {
-    fetch('/goto/off', {method: 'POST'})
-      .then(function(r) { return r.text(); })
-      .then(function(t) { status.textContent = t; showGotoStop(false); });
-  });
+  setInterval(refreshRadar, 250);
+  refreshRadar();
 </script>
 </body></html>
 """
@@ -728,14 +689,82 @@ def annotate_frame(frame):
         x1 = int(w * (0.5 + CENTER_BOX_HALF))
         cv2.rectangle(disp, (x0, y0), (x1, y1), (0, 255, 0), 3)
     if AVOID["active"]:
-        # Look-ahead zone used by obstacle avoid (yellow, full width).
+        # Look-ahead zone used by obstacle avoid (yellow, full width,
+        # bottom third of the frame).
         ax0, ax1 = 0, w
-        ay0, ay1 = int(h * 0.35), int(h * 0.92)
+        ay0, ay1 = int(h * 0.67), h
         cv2.rectangle(disp, (ax0, ay0), (ax1, ay1), (0, 255, 255), 3)
     if LAST_DETECT["found"]:
         cx = int(w / 2 + LAST_DETECT["offset"] * (w / 2))
         cv2.circle(disp, (cx, (y0 + y1) // 2), 10, (0, 0, 255), -1)
     return disp
+
+
+class VideoStabilizer:
+    """Digital video stabilization for the shaky drive video: the
+    motors vibrate the rigid camera mount, so the picture jitters
+    frame to frame. Estimates the frame-to-frame shift with phase
+    correlation, accumulates a camera trajectory, fits a straight
+    line to the recent trajectory (the intended motion — driving
+    forward, turning), and warps each frame by the deviation from
+    that line (the shake). A straight-line fit has no lag on steady
+    motion, so driving forward doesn't shift the picture. Only the
+    video stream is stabilized; the detectors keep the raw frames."""
+    def __init__(self, window=15):
+        self.window = window
+        self.prev_gray = None
+        self.traj = []
+        self.t = 0
+
+    def reset(self):
+        self.prev_gray = None
+        self.traj = []
+        self.t = 0
+
+    def stabilize(self, frame):
+        import numpy as np
+        if not CV2_OK:
+            return frame
+        small = cv2.resize(cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY),
+                           (320, 180)).astype(np.float32)  # phaseCorrelate needs float
+        if self.prev_gray is None:
+            self.prev_gray = small
+            self.traj = [(0, 0.0, 0.0)]
+            self.t = 0
+            return frame
+        shift, response = cv2.phaseCorrelate(self.prev_gray, small)
+        dx, dy = float(shift[0]), float(shift[1])
+        self.prev_gray = small
+        # Unreliable match (featureless view) or a huge shift (scene
+        # cut, fast spin) — re-anchor instead of warping wildly.
+        if response < 0.2 or abs(dx) > 25 or abs(dy) > 25:
+            self.traj = [(self.t, 0.0, 0.0)]
+            return frame
+        self.t += 1
+        px, py = self.traj[-1][1], self.traj[-1][2]
+        nx, ny = px + dx, py + dy
+        self.traj.append((self.t, nx, ny))
+        if len(self.traj) > self.window:
+            self.traj.pop(0)
+        if len(self.traj) < 3:
+            return frame
+        ts = np.array([p[0] for p in self.traj], dtype=np.float64)
+        xs = np.array([p[1] for p in self.traj], dtype=np.float64)
+        ys = np.array([p[2] for p in self.traj], dtype=np.float64)
+        fx = np.polyfit(ts, xs, 1)
+        fy = np.polyfit(ts, ys, 1)
+        # Deviation of the current position from the fitted line
+        # (the shake), scaled up from the 320x180 measurement (x4).
+        dev_x = (fx[0] * self.t + fx[1]) - nx
+        dev_y = (fy[0] * self.t + fy[1]) - ny
+        M = np.float32([[1, 0, dev_x * 4], [0, 1, dev_y * 4]])
+        h, w = frame.shape[:2]
+        return cv2.warpAffine(frame, M, (w, h), flags=cv2.INTER_LINEAR,
+                              borderMode=cv2.BORDER_REPLICATE)
+
+
+STABILIZER = VideoStabilizer()
+STABILIZE = {"on": True}  # video stabilization, toggled from the page
 
 
 class CameraManager:
@@ -841,7 +870,8 @@ class CameraManager:
             except Exception as e:
                 print(f"camera capture failed: {e}", flush=True)
                 break
-            jpg = encode_jpeg(annotate_frame(frame))
+            jpg = encode_jpeg(annotate_frame(
+                STABILIZER.stabilize(frame) if STABILIZE["on"] else frame))
             with self.cond:
                 self.latest_frame = frame
                 if jpg is not None:
@@ -863,242 +893,6 @@ class CameraManager:
 
 
 CAM = CameraManager()
-
-
-# --- Place memory -------------------------------------------------------
-# A "place" is a saved view: ORB keypoint descriptors from one frame,
-# stored as places/<name>.npz (plus a <name>.jpg thumbnail of the view).
-# Recognition compares the live frame against every saved place about
-# once a second and reports the best match. No photo leaves the Pi.
-PLACES_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                          "places")
-# A place only counts as recognized with at least this many good
-# ORB matches (Lowe ratio test). Real matches score in the hundreds;
-# an unrelated view scored 19 in testing, so 30 leaves margin both
-# ways. Raise it if the rover claims the wrong place; lower it if it
-# misses a place it should know.
-PLACE_MATCH_MIN = 30
-PLACE_STATE = {"current": None, "score": 0, "checked": 0.0}
-
-
-def _place_name_ok(name):
-    """Clean a place name for use as a filename; '' if unusable."""
-    name = re.sub(r"[^A-Za-z0-9 _\-]", "_", (name or "").strip())
-    name = re.sub(r"\s+", " ", name).strip(" _-")[:30]
-    return name
-
-
-class PlaceMemory:
-    def __init__(self):
-        self.orb = None
-        self.matcher = None
-        self.cache = {}  # name -> (mtime, descriptors, n_keypoints)
-        if CV2_OK:
-            self.orb = cv2.ORB_create(nfeatures=800)
-            self.matcher = cv2.BFMatcher(cv2.NORM_HAMMING)
-
-    def _features(self, frame):
-        """ORB keypoints + descriptors for a frame, downscaled to 640
-        wide so saving and recognizing always see the same size."""
-        small = cv2.resize(frame, (640, 360))
-        gray = cv2.cvtColor(small, cv2.COLOR_BGR2GRAY)
-        kp, des = self.orb.detectAndCompute(gray, None)
-        return small, kp, des
-
-    def _load_all(self):
-        """(Re)load any place files that changed since last read."""
-        import numpy as np
-        if not os.path.isdir(PLACES_DIR):
-            return
-        for fn in os.listdir(PLACES_DIR):
-            if not fn.endswith(".npz"):
-                continue
-            name = fn[:-4]
-            path = os.path.join(PLACES_DIR, fn)
-            mtime = os.path.getmtime(path)
-            cached = self.cache.get(name)
-            if cached and cached[0] == mtime:
-                continue
-            try:
-                data = np.load(path)
-                des = data["des"]
-                self.cache[name] = (mtime, des, int(data["n"]))
-            except Exception:
-                pass
-        for name in list(self.cache):
-            if not os.path.exists(os.path.join(PLACES_DIR, name + ".npz")):
-                del self.cache[name]
-
-    def save(self, name, frame):
-        import numpy as np
-        if not CV2_OK:
-            return False, "OpenCV not available on this Pi"
-        name = _place_name_ok(name)
-        if not name:
-            return False, "give the place a name (letters and numbers)"
-        small, _, des = self._features(frame)
-        if des is None or len(des) < 10:
-            return False, "not enough detail in this view to remember"
-        os.makedirs(PLACES_DIR, exist_ok=True)
-        np.savez_compressed(os.path.join(PLACES_DIR, name + ".npz"),
-                            des=des, n=len(des))
-        ok, jpg = cv2.imencode(".jpg", small,
-                               [cv2.IMWRITE_JPEG_QUALITY, 80])
-        if ok:
-            with open(os.path.join(PLACES_DIR, name + ".jpg"), "wb") as f:
-                f.write(jpg.tobytes())
-        self.cache.pop(name, None)  # force a reload on next recognize
-        return True, f'saved "{name}" ({len(des)} keypoints)'
-
-    def list_places(self):
-        self._load_all()
-        return sorted((name, info[2]) for name, info in self.cache.items())
-
-    def delete(self, name):
-        name = _place_name_ok(name)
-        removed = False
-        for ext in (".npz", ".jpg"):
-            path = os.path.join(PLACES_DIR, name + ext)
-            if os.path.exists(path):
-                os.remove(path)
-                removed = True
-        self.cache.pop(name, None)
-        if PLACE_STATE["current"] == name:
-            PLACE_STATE["current"] = None
-            PLACE_STATE["score"] = 0
-        return removed
-
-    def recognize(self, frame):
-        """Best matching saved place for this frame, or (None, score)."""
-        name, score, _ = self.recognize_detail(frame)
-        return name, score
-
-    def recognize_detail(self, frame):
-        """Best match plus where it sits in the frame. Returns
-        (name, score, cx): cx in [-1, 1] is the horizontal center of
-        the good matches, + = right of center, None when nothing
-        recognized. Go-to steering uses cx to stay aimed at a place."""
-        if not CV2_OK:
-            return None, 0, None
-        _, kp, des = self._features(frame)
-        if des is None or kp is None:
-            return None, 0, None
-        self._load_all()
-        best_name, best_score, best_xs = None, 0, None
-        for name, (_, saved_des, _) in self.cache.items():
-            if saved_des is None or len(saved_des) == 0:
-                continue
-            try:
-                pairs = self.matcher.knnMatch(des, saved_des, k=2)
-            except Exception:
-                continue
-            xs = []
-            for pair in pairs:
-                if len(pair) == 2 and pair[0].distance < 0.75 * pair[1].distance:
-                    xs.append(kp[pair[0].queryIdx].pt[0])
-            if len(xs) > best_score:
-                best_name, best_score = name, len(xs)
-                best_xs = xs
-        if best_score >= PLACE_MATCH_MIN:
-            cx = (sum(best_xs) / len(best_xs) - 320.0) / 320.0
-            return best_name, best_score, max(-1.0, min(1.0, cx))
-        return None, best_score, None
-
-
-PLACES = PlaceMemory()
-
-
-def place_loop():
-    """Background: about once a second, check whether the live view
-    matches a saved place. Only runs while frames are flowing (i.e.
-    while the drive page is open)."""
-    while True:
-        time.sleep(1.0)
-        frame = CAM.get_frame()
-        if frame is None:
-            continue
-        try:
-            name, score = PLACES.recognize(frame)
-        except Exception:
-            continue
-        PLACE_STATE["current"] = name
-        PLACE_STATE["score"] = score
-        PLACE_STATE["checked"] = time.time()
-
-
-# --- Routes -------------------------------------------------------------
-# A route chains places with directions: {"name": ..., "destination":
-# <place>, "steps": [{"place": ..., "action": "left"|"right"|"follow"|
-# "straight"}]}. Saved as JSON in routes.json next to this file.
-ROUTES_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                           "routes.json")
-ROUTES_LOCK = threading.Lock()
-ROUTE_ACTIONS = ("left", "right", "follow", "straight")
-
-
-def load_routes():
-    try:
-        with open(ROUTES_FILE) as f:
-            data = json.load(f)
-        routes = data.get("routes", []) if isinstance(data, dict) else []
-        return [r for r in routes if isinstance(r, dict) and r.get("name")]
-    except Exception:
-        return []
-
-
-def save_routes_file(routes):
-    tmp = ROUTES_FILE + ".tmp"
-    with open(tmp, "w") as f:
-        json.dump({"routes": routes}, f, indent=1)
-    os.replace(tmp, ROUTES_FILE)
-
-
-def get_route(name):
-    for r in load_routes():
-        if r["name"] == name:
-            return r
-    return None
-
-
-def save_route(data):
-    """Validate and store a route dict. Returns (ok, message)."""
-    if not isinstance(data, dict):
-        return False, "bad route data"
-    name = _place_name_ok(data.get("name", ""))
-    if not name:
-        return False, "give the route a name (letters and numbers)"
-    known = {n for n, _ in PLACES.list_places()}
-    dest = (data.get("destination") or "").strip()
-    if dest not in known:
-        return False, f'destination "{dest}" is not a saved place'
-    steps = data.get("steps") or []
-    clean_steps = []
-    for s in steps:
-        if not isinstance(s, dict):
-            return False, "bad step in route"
-        place = (s.get("place") or "").strip()
-        action = (s.get("action") or "").strip()
-        if place not in known:
-            return False, f'step place "{place}" is not a saved place'
-        if action not in ROUTE_ACTIONS:
-            return False, f'bad direction "{action}"'
-        clean_steps.append({"place": place, "action": action})
-    route = {"name": name, "destination": dest, "steps": clean_steps}
-    with ROUTES_LOCK:
-        routes = [r for r in load_routes() if r["name"] != name]
-        routes.append(route)
-        save_routes_file(routes)
-    return True, f'saved route "{name}" ({len(clean_steps)} steps)'
-
-
-def delete_route(name):
-    with ROUTES_LOCK:
-        routes = load_routes()
-        kept = [r for r in routes if r["name"] != name]
-        if len(kept) == len(routes):
-            return False
-        save_routes_file(kept)
-        return True
 
 
 def detect_line(frame):
@@ -1144,7 +938,7 @@ def floor_obstacle(frame):
     band_diff = np.abs(band - ref).sum(axis=2)
     thresh = max(90.0, float(np.percentile(band_diff, 95)) * 1.5)
     x0, x1 = 0, w  # detection zone spans the full frame width
-    y0, y1 = int(h * 0.35), int(h * 0.92)
+    y0, y1 = int(h * 0.67), h  # bottom third of the frame only
     zone = frame[y0:y1, x0:x1].astype(np.int16)
     diff = np.abs(zone - ref).sum(axis=2)
     nonfloor = diff > thresh
@@ -1178,11 +972,6 @@ def debug_stats():
     found, offset, count = detect_line(frame)
     with AUTO_LOCK:
         status = AUTO["status"]
-    places = PLACES.list_places()
-    current = PLACE_STATE["current"]
-    place_line = (f"place: {current} ({PLACE_STATE['score']} matches)"
-                  if current else
-                  f"place: unknown (best {PLACE_STATE['score']} matches)")
     return "\n".join([
         f"frame: {w}x{h}",
         f"band rows: {int(h * 0.55)}-{int(h * 0.95)}",
@@ -1193,8 +982,12 @@ def debug_stats():
         f"detector: found={found} offset={offset:+.2f} count={count}",
         f"auto status: {status}",
         f"avoid status: {AVOID['status']}",
-        f"saved places: {', '.join(f'{n} ({k})' for n, k in places) or 'none'}",
-        place_line,
+        f"lidar: online={LIDAR['online']} dist={LIDAR['dist_m']} "
+        f"strength={LIDAR['strength']} frames={LIDAR['frames']} "
+        f"bad={LIDAR['bad']} err={LIDAR['error'] or 'none'}",
+        f"heading: {HEADING['deg']:.0f} deg trail: {len(TRAIL)} pts",
+        f"signs status: {SIGNS_STATE['status']}",
+        f"saved signs: {', '.join(f'{n} → {i}' for n, i in SIGNS.list_signs()) or 'none'}",
     ])
 
 
@@ -1285,6 +1078,138 @@ def auto_loop():
         time.sleep(0.1)
 
 
+# --- TF-Luna LiDAR -------------------------------------------------------
+# Single-point time-of-flight LiDAR on the USB-TTL adapter (see
+# BUILD_GUIDE.md for wiring). It streams 9-byte frames at 100 Hz:
+# 0x59 0x59, distance cm (little-endian), strength, chip temp,
+# checksum. The reader thread keeps the latest reading in LIDAR and
+# a short trail of recent readings (heading + distance) for the
+# bird's-eye radar view. If pyserial is missing or the adapter is
+# unplugged, the reader just reports offline — the server and the
+# camera-based fallback keep working.
+LIDAR_PORT = "/dev/ttyUSB0"
+LIDAR_BAUD = 115200
+LIDAR = {"online": False, "dist_m": None, "strength": None,
+         "temp_c": None, "updated": 0.0, "frames": 0, "bad": 0,
+         "error": ""}
+LIDAR_LOCK = threading.Lock()
+# Heading estimate for the radar trail: degrees, counterclockwise
+# positive (a left turn adds). Dead reckoning from commanded turns
+# only — there is no gyro or encoder, so it drifts. The trail fades
+# in seconds, so a rough heading is good enough for the picture.
+HEADING = {"deg": 0.0}
+TRAIL = []  # (heading_deg, dist_m, timestamp), pruned to the last 8 s
+TRAIL_MAX_AGE = 8.0
+# Turn rate at 100% power, from the SPIN_180_TIME calibration
+# (180° in SPIN_180_TIME seconds).
+TURN_RATE_DEG_S = 180.0 / SPIN_180_TIME
+
+
+def heading_add(degrees):
+    """Nudge the heading estimate (dead reckoning, drifts)."""
+    with LIDAR_LOCK:
+        HEADING["deg"] = (HEADING["deg"] + degrees) % 360.0
+
+
+def lidar_extract(buf):
+    """Pull complete TF-Luna frames out of buf (a bytearray).
+    Returns a list of (dist_m, strength, temp_c). Drops garbage
+    and bad-checksum frames; a partial trailing frame stays in
+    buf for the next read."""
+    readings = []
+    while True:
+        i = buf.find(b"\x59\x59")
+        if i < 0:
+            # No header: keep only a possible split-header tail byte.
+            del buf[:-1]
+            break
+        if len(buf) - i < 9:
+            # Partial frame: drop garbage before the header, keep
+            # the partial frame for the next read.
+            del buf[:i]
+            break
+        frame = bytes(buf[i:i + 9])
+        del buf[:i + 9]
+        if (sum(frame[:8]) & 0xFF) != frame[8]:
+            with LIDAR_LOCK:
+                LIDAR["bad"] += 1
+            continue
+        dist_cm = frame[2] | (frame[3] << 8)
+        strength = frame[4] | (frame[5] << 8)
+        temp_raw = frame[6] | (frame[7] << 8)
+        readings.append((dist_cm / 100.0, strength,
+                         (temp_raw / 8.0) - 256.0))
+    return readings
+
+
+def lidar_loop():
+    """Read the TF-Luna forever, updating LIDAR + TRAIL. Never
+    raises: a missing adapter or bad port just means offline."""
+    try:
+        import serial
+    except ImportError:
+        with LIDAR_LOCK:
+            LIDAR["error"] = ("pyserial not installed "
+                              "(sudo apt install python3-serial)")
+        return
+    buf = bytearray()
+    last_sample = 0.0
+    while True:
+        try:
+            ser = serial.Serial(LIDAR_PORT, LIDAR_BAUD, timeout=0.2)
+        except Exception as e:
+            with LIDAR_LOCK:
+                LIDAR["online"] = False
+                LIDAR["error"] = f"cannot open {LIDAR_PORT}: {e}"
+            time.sleep(5.0)
+            continue
+        with LIDAR_LOCK:
+            LIDAR["error"] = ""
+        try:
+            while True:
+                chunk = ser.read(ser.in_waiting or 1)
+                if chunk:
+                    buf += chunk
+                    for dist_m, strength, temp_c in lidar_extract(buf):
+                        now = time.time()
+                        with LIDAR_LOCK:
+                            LIDAR["online"] = True
+                            LIDAR["dist_m"] = dist_m
+                            LIDAR["strength"] = strength
+                            LIDAR["temp_c"] = temp_c
+                            LIDAR["updated"] = now
+                            LIDAR["frames"] += 1
+                            if now - last_sample >= 0.2:
+                                last_sample = now
+                                TRAIL.append((HEADING["deg"], dist_m, now))
+                                cutoff = now - TRAIL_MAX_AGE
+                                while TRAIL and TRAIL[0][2] < cutoff:
+                                    TRAIL.pop(0)
+                else:
+                    time.sleep(0.01)
+        except Exception as e:
+            with LIDAR_LOCK:
+                LIDAR["online"] = False
+                LIDAR["error"] = f"read error: {e}"
+            try:
+                ser.close()
+            except Exception:
+                pass
+            buf.clear()
+            time.sleep(2.0)
+
+
+def lidar_reading():
+    """Latest LiDAR reading as (dist_m, strength), or None if the
+    sensor is offline or the reading is stale (>1 s old)."""
+    with LIDAR_LOCK:
+        if not LIDAR["online"]:
+            return None
+        if time.time() - LIDAR["updated"] > 1.0:
+            return None
+        return LIDAR["dist_m"], LIDAR["strength"]
+
+
 AVOID = {"active": False, "cam": False, "last_ping": 0.0,
          "status": "avoid off"}
 AVOID_LOCK = threading.Lock()
@@ -1295,7 +1220,11 @@ AVOID_LOCK = threading.Lock()
 # it starts turning one way it keeps turning that way (up to a full
 # turn) instead of flip-flopping; if turning doesn't clear the path
 # it backs up for a second to get space, then tries turning again.
-AVOID_BLOCK_FRAC = 0.15   # non-floor share of the zone that = blocked
+AVOID_BLOCK_FRAC = 0.05   # non-floor share of the zone that = blocked (sensitive: anything contrasting in the bottom third triggers a turn or back-up)
+LIDAR_STOP_M = 0.5     # LiDAR: something closer than this = blocked, turn
+LIDAR_CLOSE_M = 0.25   # LiDAR: closer than this = too close to turn, back up
+AVOID_HEAVY_FRAC = 0.50   # non-floor share of the zone that = "a lot of obstacles" — still this blocked after turning means back up instead
+AVOID_TURN_MIN = 0.5      # seconds of turning before the heavy check applies (enough to see a new direction)
 AVOID_TURN_COMMIT = 3.0   # seconds to keep turning one way (~full turn)
 AVOID_BACKUP_TIME = 1.0   # seconds to reverse when turning isn't working
 AVOID_STUCK_TIME = 10.0   # seconds blocked in a row = stuck
@@ -1322,14 +1251,18 @@ def avoid_stop(reason):
 
 
 def avoid_loop():
-    """Obstacle-avoid control loop: drives continuously, no stopping
-    to scan. Each cycle (~10 Hz) it checks the latest camera frame:
-    path clear -> keep driving forward; blocked -> spin in place
-    toward the clearer side. The rover is always moving. Escape
-    moves are COMMITTED, never flip-flopped: once it starts turning
-    one way it keeps turning that way (up to a full turn); if that
-    doesn't clear the path it backs up for a second to get space,
-    then tries turning again. It never drives straight back into the
+    """Obstacle-avoid control loop, rebuilt on the TF-Luna LiDAR.
+    Each cycle (~10 Hz) it reads the distance straight ahead: clear
+    (>= LIDAR_STOP_M) -> keep driving forward; blocked -> spin in
+    place toward the clearer side (the camera's floor check picks
+    the side). Too close (< LIDAR_CLOSE_M) -> back up for space
+    instead of turning. If the LiDAR is offline or stale, the loop
+    falls back to the old camera-only floor-color logic, so the
+    mode still works with the sensor unplugged. Escape moves are
+    COMMITTED, never flip-flopped: once it starts turning one way
+    it keeps turning that way (up to a full turn); if that doesn't
+    clear the path it backs up for a second to get space, then
+    tries turning again. It never drives straight back into the
     same obstacle — a back-up always runs to completion and is
     followed by a turn, not by driving forward. If the path stays
     blocked for AVOID_STUCK_TIME straight, it stops and reports
@@ -1357,16 +1290,37 @@ def avoid_loop():
             avoid_set_status("backing up")
             time.sleep(0.1)
             continue
+        # --- sense: LiDAR first, camera as fallback + turn direction
+        reading = lidar_reading()
+        dist_m = None
+        use_lidar = False
+        if reading is not None:
+            d, strength = reading
+            # Rated range 0.2-8 m; strength 0 or 65535 = bad reading.
+            if 0.2 <= d <= 8.0 and 0 < strength < 65535:
+                dist_m = d
+                use_lidar = True
         frame = CAM.get_frame()
-        if frame is None:
+        cam_blocked, frac, left_frac, right_frac = False, 0.0, 0.0, 0.0
+        if frame is not None:
+            cam_blocked, frac, left_frac, right_frac = floor_obstacle(frame)
+        if frame is None and not use_lidar:
+            # No sensor at all yet — wait, don't drive blind.
             time.sleep(0.05)
             continue
-        blocked, frac, left_frac, right_frac = floor_obstacle(frame)
+        if use_lidar:
+            blocked = dist_m < LIDAR_STOP_M
+            very_close = dist_m < LIDAR_CLOSE_M
+            sensor = f"lidar {dist_m:.2f}m"
+        else:
+            blocked = cam_blocked
+            very_close = False
+            sensor = "camera (lidar offline)"
         if not blocked:
             blocked_since = None
             escape_side = None
             escape_since = None
-            avoid_set_status(f"clear ({frac:.0%} ahead) — driving")
+            avoid_set_status(f"{sensor} — driving")
             apply_drive(-1.0, -1.0)
         else:
             if blocked_since is None:
@@ -1374,10 +1328,41 @@ def avoid_loop():
             if now - blocked_since > AVOID_STUCK_TIME:
                 avoid_stop("stuck — blocked on all sides")
                 continue
+            if very_close:
+                # Too close to spin safely: back up for space.
+                backup_until = now + AVOID_BACKUP_TIME
+                escape_side = None
+                escape_since = None
+                apply_drive(1.0, 1.0)
+                avoid_set_status(f"{sensor} — too close, backing up")
+                time.sleep(0.1)
+                continue
             if escape_side is None:
                 # Commit to the clearer side; don't re-pick every frame.
                 escape_side = "left" if left_frac <= right_frac else "right"
                 escape_since = now
+            elif use_lidar and dist_m < LIDAR_CLOSE_M \
+                    and now - escape_since > AVOID_TURN_MIN:
+                # Turned a bit and still very close: back up for
+                # space instead of keep turning into it.
+                backup_until = now + AVOID_BACKUP_TIME
+                escape_side = None
+                escape_since = None
+                apply_drive(1.0, 1.0)
+                avoid_set_status(f"{sensor} — still close, backing up")
+                time.sleep(0.1)
+                continue
+            elif not use_lidar and frac > AVOID_HEAVY_FRAC \
+                    and now - escape_since > AVOID_TURN_MIN:
+                # Camera fallback: turned a bit and the bottom third
+                # is still mostly blocked: back up for space.
+                backup_until = now + AVOID_BACKUP_TIME
+                escape_side = None
+                escape_since = None
+                apply_drive(1.0, 1.0)
+                avoid_set_status("still blocked — backing up")
+                time.sleep(0.1)
+                continue
             elif now - escape_since > AVOID_TURN_COMMIT:
                 # A full turn this way didn't clear the path: back up
                 # for a second to get space, then try turning again.
@@ -1388,8 +1373,315 @@ def avoid_loop():
                 avoid_set_status("backing up")
                 time.sleep(0.1)
                 continue
-            avoid_set_status(f"blocked ({frac:.0%}) — turning {escape_side}")
+            avoid_set_status(f"{sensor} — turning {escape_side}")
             apply_command(escape_side, 100)
+            # Dead-reckoned heading for the radar trail: this cycle
+            # spins ~0.1 s at 100% power.
+            heading_add(TURN_RATE_DEG_S * 0.1 if escape_side == "left"
+                        else -TURN_RATE_DEG_S * 0.1)
+        time.sleep(0.1)
+
+
+
+# --- Signs ---------------------------------------------------------------
+# A "sign" is a hand-drawn mark on paper (an arrow, a shape, a symbol)
+# that means an instruction. Recording saves the sign's ORB keypoint
+# fingerprint plus how big it looked in the frame (the keypoint
+# bounding box), in a signs/ folder on the Pi. While "Follow signs"
+# runs, the rover drives forward and watches for recorded signs; when
+# one appears at about the recorded size it runs that sign's
+# instruction. Size is the trigger distance: a sign only fires when
+# it looks about as big as when it was recorded, so the rover acts
+# at the right spot instead of from across the room.
+SIGNS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                         "signs")
+SIGN_MATCH_MIN = 15    # good ORB matches to count as a seen sign (a
+                       # hand-drawn sign has fewer keypoints than a room)
+SIGN_SIZE_MIN = 0.7    # sign must appear at least 70% of recorded size
+SIGN_SIZE_MAX = 1.5    # ...and at most 150% (too big = too close / wrong scale)
+SIGN_COOLDOWN = 5.0    # seconds before the same sign can fire again
+SIGN_DRIVE_SPEED = 0.7   # follow-signs driving speed (70% — 50% won't
+                         # move the loaded rover; full power shakes the
+                         # video; turns stay at 100% because their 90°
+                         # timing was calibrated there)
+SIGN_TURN_TIME = SPIN_180_TIME / 2  # 90° turn, timed like the route turns
+SIGN_STRAIGHT_TIME = 2.0  # seconds of driving for a "go straight" sign
+SIGN_BACK_TIME = 2.0      # seconds of driving for a "back up" sign
+SIGN_INSTRUCTIONS = ("left", "right", "straight", "back", "stop")
+SIGN_INSTRUCTION_LABELS = {
+    "left": "Turn left", "right": "Turn right",
+    "straight": "Go straight", "back": "Back up", "stop": "Stop",
+}
+SIGN_RECOG = {"current": None, "score": 0, "size": 0.0, "checked": 0.0}
+
+
+def _sign_name_ok(name):
+    """Sanitize a sign name for use as a filename."""
+    name = (name or "").strip().replace("/", "_").replace("\\", "_")
+    return name[:30] if name else "sign"
+
+
+class SignStore:
+    """Saved signs: ORB descriptors + keypoint positions + the size
+    the sign appeared at when recorded (keypoint bounding box) +
+    the instruction it means. Stored as signs/<name>.npz plus a
+    <name>.jpg thumbnail of the view. No photo leaves the Pi."""
+
+    def __init__(self):
+        self.dir = SIGNS_DIR
+        os.makedirs(self.dir, exist_ok=True)
+        self.orb = cv2.ORB_create(nfeatures=500) if CV2_OK else None
+        self.lock = threading.Lock()
+
+    def _load(self, name):
+        import numpy as np
+        path = os.path.join(self.dir, name + ".npz")
+        if not os.path.exists(path):
+            return None
+        try:
+            d = np.load(path, allow_pickle=True)
+            return {
+                "des": d["des"],
+                "pts": d["pts"],
+                "instruction": str(d["instruction"]),
+                "bbox": d["bbox"],
+            }
+        except Exception:
+            return None
+
+    def save(self, name, frame, instruction):
+        import numpy as np
+        if not CV2_OK or self.orb is None:
+            return False, "OpenCV unavailable — can't record signs"
+        if instruction not in SIGN_INSTRUCTIONS:
+            return False, "unknown instruction"
+        name = _sign_name_ok(name)
+        small = cv2.resize(frame, (640, 360))
+        kp, des = self.orb.detectAndCompute(small, None)
+        if des is None or len(kp) < 10:
+            return False, "not enough detail in this view — move closer or draw bolder"
+        pts = np.array([k.pt for k in kp], dtype=np.float32)
+        w = float(pts[:, 0].max() - pts[:, 0].min())
+        h = float(pts[:, 1].max() - pts[:, 1].min())
+        path = os.path.join(self.dir, name + ".npz")
+        with self.lock:
+            np.savez(path, des=des, pts=pts,
+                     instruction=np.array(instruction),
+                     bbox=np.array([w, h], dtype=np.float32))
+            cv2.imwrite(os.path.join(self.dir, name + ".jpg"), frame)
+        return True, f'saved sign "{name}" → {SIGN_INSTRUCTION_LABELS[instruction]}'
+
+    def list_signs(self):
+        out = []
+        try:
+            names = sorted(f[:-4] for f in os.listdir(self.dir)
+                           if f.endswith(".npz"))
+        except Exception:
+            return out
+        for n in names:
+            s = self._load(n)
+            if s is not None:
+                out.append((n, s["instruction"]))
+        return out
+
+    def delete(self, name):
+        name = _sign_name_ok(name)
+        removed = False
+        for suffix in (".npz", ".jpg"):
+            p = os.path.join(self.dir, name + suffix)
+            if os.path.exists(p):
+                try:
+                    os.remove(p)
+                    removed = True
+                except Exception:
+                    pass
+        return removed
+
+    def recognize(self, frame):
+        """Best matching sign in this frame, or (None, 0, 0.0, 0.0).
+        Returns (name, good_matches, size_ratio, cx): size_ratio is
+        how big the sign looks now vs when recorded (1.0 = same size);
+        cx is the centroid's horizontal offset (-1..1). A sign only
+        counts when it has enough good matches AND its size is within
+        [SIGN_SIZE_MIN, SIGN_SIZE_MAX] of the recorded size."""
+        import numpy as np
+        if not CV2_OK or self.orb is None:
+            return None, 0, 0.0, 0.0
+        small = cv2.resize(frame, (640, 360))
+        kp, des = self.orb.detectAndCompute(small, None)
+        if des is None or len(kp) < 5:
+            return None, 0, 0.0, 0.0
+        pts = np.array([k.pt for k in kp], dtype=np.float32)
+        bf = cv2.BFMatcher(cv2.NORM_HAMMING, crossCheck=False)
+        try:
+            names = sorted(f[:-4] for f in os.listdir(self.dir)
+                           if f.endswith(".npz"))
+        except Exception:
+            return None, 0, 0.0, 0.0
+        best = (None, 0, 0.0, 0.0)
+        for name in names:
+            s = self._load(name)
+            if s is None or s["des"] is None or len(s["des"]) < 5:
+                continue
+            try:
+                matches = bf.knnMatch(des, s["des"], k=2)
+            except Exception:
+                continue
+            good = []
+            for m in matches:
+                if len(m) == 2 and m[0].distance < 0.75 * m[1].distance:
+                    good.append(m[0])
+            if len(good) < SIGN_MATCH_MIN:
+                continue
+            # Size: compare the spread of the MATCHED keypoints now
+            # vs the same keypoints when recorded (same subset both
+            # sides, so the comparison is fair).
+            cur = pts[[m.queryIdx for m in good]]
+            rec = s["pts"][[m.trainIdx for m in good]]
+            cw = float(cur[:, 0].max() - cur[:, 0].min())
+            ch = float(cur[:, 1].max() - cur[:, 1].min())
+            rw = float(rec[:, 0].max() - rec[:, 0].min())
+            rh = float(rec[:, 1].max() - rec[:, 1].min())
+            if rw < 5 or rh < 5:
+                size_ratio = 1.0  # recorded points too clustered to measure
+            else:
+                size_ratio = ((cw / rw) + (ch / rh)) / 2.0
+            if not (SIGN_SIZE_MIN <= size_ratio <= SIGN_SIZE_MAX):
+                continue
+            score = len(good)
+            if score > best[1]:
+                cx = float(cur[:, 0].mean() / 640.0 * 2 - 1)
+                best = (name, score, size_ratio, cx)
+        return best
+
+
+SIGNS = SignStore()
+SIGNS_STATE = {"active": False, "last_ping": 0.0,
+               "status": "signs off", "last_sign": None, "last_time": 0.0}
+SIGNS_LOCK = threading.Lock()
+
+
+def sign_set_status(text):
+    with SIGNS_LOCK:
+        SIGNS_STATE["status"] = text
+
+
+def sign_stop(reason):
+    with SIGNS_LOCK:
+        was_active = SIGNS_STATE["active"]
+        SIGNS_STATE["active"] = False
+        SIGNS_STATE["status"] = reason
+    if was_active:
+        stop_all()
+    print(f"signs: stopped ({reason})", flush=True)
+
+
+def sign_start():
+    with SIGNS_LOCK:
+        if SIGNS_STATE["active"]:
+            return False, "already following signs"
+        if not SIGNS.list_signs():
+            return False, "no signs recorded yet — record one first"
+        SIGNS_STATE["active"] = True
+        SIGNS_STATE["last_ping"] = time.time()
+        SIGNS_STATE["status"] = "following signs…"
+        SIGNS_STATE["last_sign"] = None
+        SIGNS_STATE["last_time"] = 0.0
+    return True, "following signs…"
+
+
+def _sign_alive():
+    with SIGNS_LOCK:
+        return (SIGNS_STATE["active"]
+                and time.time() - SIGNS_STATE["last_ping"] <= 3.0)
+
+
+def _sign_timed_drive(left, right, seconds):
+    """Drive at the given throttles for a fixed time (for sign
+    instructions), stopping early if the mode is cancelled."""
+    end = time.time() + seconds
+    while time.time() < end:
+        if not _sign_alive():
+            break
+        apply_drive(left, right)
+        time.sleep(0.05)
+    stop_all()
+
+
+def _sign_timed_spin(side, seconds):
+    """Spin in place for a fixed time (for a turn sign)."""
+    start = time.time()
+    end = start + seconds
+    while time.time() < end:
+        if not _sign_alive():
+            break
+        apply_command(side, 100)
+        time.sleep(0.05)
+    stop_all()
+    # Dead-reckoned heading for the radar trail.
+    heading_add(TURN_RATE_DEG_S * (time.time() - start) if side == "left"
+                else -TURN_RATE_DEG_S * (time.time() - start))
+
+
+def sign_loop():
+    """Follow-signs control loop: drives forward and watches for
+    recorded signs. When a sign appears at about the recorded size,
+    it runs that sign's instruction (turn left/right, go straight,
+    back up, or stop). The same sign can't fire again for
+    SIGN_COOLDOWN seconds. If the camera has no frame yet it waits
+    instead of driving blind. Same safety as the other modes: a
+    D-pad press cancels, and it stops if the page loses contact
+    for 3 seconds (the page heartbeats /sign/ping while it runs)."""
+    while True:
+        with SIGNS_LOCK:
+            active = SIGNS_STATE["active"]
+            last_ping = SIGNS_STATE["last_ping"]
+        if not active:
+            time.sleep(0.1)
+            continue
+        if time.time() - last_ping > 3.0:
+            sign_stop("page gone — signs stopped")
+            time.sleep(0.1)
+            continue
+        frame = CAM.get_frame()
+        if frame is None:
+            stop_all()
+            time.sleep(0.1)
+            continue
+        name, score, size_ratio, _cx = SIGNS.recognize(frame)
+        now = time.time()
+        with SIGNS_LOCK:
+            SIGN_RECOG["current"] = name
+            SIGN_RECOG["score"] = score
+            SIGN_RECOG["size"] = size_ratio
+            SIGN_RECOG["checked"] = now
+            last_sign = SIGNS_STATE["last_sign"]
+            last_time = SIGNS_STATE["last_time"]
+        if name is not None and (name != last_sign
+                                 or now - last_time > SIGN_COOLDOWN):
+            with SIGNS_LOCK:
+                SIGNS_STATE["last_sign"] = name
+                SIGNS_STATE["last_time"] = now
+            instr = dict(SIGNS.list_signs()).get(name)
+            label = SIGN_INSTRUCTION_LABELS.get(instr, instr)
+            sign_set_status(f"saw {name} ({score} matches, {size_ratio:.2f}×) — {label}")
+            if instr == "left":
+                _sign_timed_spin("left", SIGN_TURN_TIME)
+            elif instr == "right":
+                _sign_timed_spin("right", SIGN_TURN_TIME)
+            elif instr == "straight":
+                _sign_timed_drive(-SIGN_DRIVE_SPEED, -SIGN_DRIVE_SPEED,
+                                  SIGN_STRAIGHT_TIME)
+            elif instr == "back":
+                _sign_timed_drive(SIGN_DRIVE_SPEED, SIGN_DRIVE_SPEED,
+                                  SIGN_BACK_TIME)
+            elif instr == "stop":
+                sign_stop(f"stopped at {name}")
+                continue
+            continue
+        sign_set_status("following signs…"
+                        + (f" last: {last_sign}" if last_sign else ""))
+        apply_drive(-SIGN_DRIVE_SPEED, -SIGN_DRIVE_SPEED)
         time.sleep(0.1)
 
 
@@ -1412,10 +1704,10 @@ def spin_180():
         avoid_was_on = AVOID["active"]
     if avoid_was_on:
         avoid_stop("spin 180")
-    with GOTO_LOCK:
-        goto_was_on = GOTO["active"]
-    if goto_was_on:
-        goto_stop("spin 180")
+    with SIGNS_LOCK:
+        signs_was_on = SIGNS_STATE["active"]
+    if signs_was_on:
+        sign_stop("spin 180")
     print("spin: 180° turn starting", flush=True)
     apply_command("right", 100)  # spin in place
     start = time.time()
@@ -1431,263 +1723,15 @@ def spin_180():
         time.sleep(0.05)
     if not cancelled:
         apply_command("stop", 100)
+        heading_add(-180.0)  # spun right for a half-turn
+    else:
+        # Partial spin: credit the time actually spent turning.
+        heading_add(-TURN_RATE_DEG_S * (time.time() - start))
     with SPIN_LOCK:
         SPIN["active"] = False
     print(f"spin: 180° turn done{' (cancelled)' if cancelled else ''}",
           flush=True)
     return True
-
-
-# --- Go to (routes) -----------------------------------------------------
-# Runs one route in its own thread: for each step, scan for the step's
-# place, drive toward it, do the step's direction, then move on; at
-# the end find the destination and stop there. Same safety as line
-# following: a D-pad press cancels, and it stops if the page loses
-# contact for 3 seconds (the page heartbeats /goto/ping while a
-# route runs). The watchdog also stops the motors if commands stop.
-GOTO = {"active": False, "cam": False, "last_ping": 0.0,
-        "status": "goto off", "route": None}
-GOTO_LOCK = threading.Lock()
-# A 90° turn is timed, not measured: half of the 180° spin time.
-# Calibrate the same way as SPIN_180_TIME if turns over/undershoot.
-TURN_90_TIME = SPIN_180_TIME / 2
-GOTO_CENTER_TOL = 0.2    # |cx| <= this counts as aimed at the place
-GOTO_ARRIVE_SCORE = 150  # good matches that = "here" (recognition is 30)
-GOTO_APPROACH_TIMEOUT = 30.0  # seconds to reach a place before giving up
-GOTO_FOLLOW_TIMEOUT = 20.0    # seconds of following before giving up
-GOTO_STRAIGHT_TIME = 2.0      # seconds of driving for a "straight" step
-GOTO_SEARCH_STEPS = 12        # 12 x ~30° spin bursts = a full turn
-GOTO_SEARCH_SPIN = 0.25       # seconds of spin per scan step
-GOTO_SEARCH_PAUSE = 0.35      # seconds to let a frame settle per step
-
-
-def goto_set_status(text):
-    with GOTO_LOCK:
-        GOTO["status"] = text
-
-
-def goto_stop(reason):
-    """Stop a route run (and the motors) and give the camera back."""
-    with GOTO_LOCK:
-        was_active = GOTO["active"]
-        GOTO["active"] = False
-        GOTO["status"] = reason
-        GOTO["route"] = None
-        cam = GOTO["cam"]
-        GOTO["cam"] = False
-    apply_drive(0, 0)
-    if cam:
-        CAM.release()
-    print(f"goto: {reason}", flush=True)
-    return was_active
-
-
-def goto_start(route):
-    """Start running a route dict. Returns (ok, message)."""
-    with AUTO_LOCK:
-        auto_was_on = AUTO["active"]
-    if auto_was_on:
-        auto_stop("goto on")
-    with AVOID_LOCK:
-        avoid_was_on = AVOID["active"]
-    if avoid_was_on:
-        avoid_stop("goto on")
-    with GOTO_LOCK:
-        if GOTO["active"]:
-            return False, "already going somewhere — stop it first"
-        GOTO["active"] = True
-        GOTO["last_ping"] = time.time()
-        GOTO["route"] = route
-        GOTO["status"] = f"going to {route['destination']}…"
-    if not CAM.acquire():
-        goto_stop("camera could not start")
-        return False, "camera could not start"
-    with GOTO_LOCK:
-        GOTO["cam"] = True
-    threading.Thread(target=_goto_run, args=(route,), daemon=True).start()
-    return True, f"going to {route['destination']}"
-
-
-def _goto_alive():
-    """Still running and the page heartbeat is fresh."""
-    with GOTO_LOCK:
-        return GOTO["active"] and time.time() - GOTO["last_ping"] <= 3.0
-
-
-def _goto_sleep(seconds):
-    """Sleep, but wake early if the run was cancelled. False = stop."""
-    end = time.time() + seconds
-    while time.time() < end:
-        if not _goto_alive():
-            return False
-        time.sleep(0.05)
-    return True
-
-
-def _goto_search(place):
-    """Spin in place in ~30° steps until the place is in view.
-    True = found (stop here, it is roughly ahead)."""
-    for _ in range(GOTO_SEARCH_STEPS):
-        if not _goto_alive():
-            return False
-        frame = CAM.get_frame()
-        if frame is not None:
-            name, score, _ = PLACES.recognize_detail(frame)
-            if name == place and score >= PLACE_MATCH_MIN:
-                return True
-        apply_command("right", 100)
-        if not _goto_sleep(GOTO_SEARCH_SPIN):
-            return False
-        apply_command("stop", 100)
-        if not _goto_sleep(GOTO_SEARCH_PAUSE):
-            return False
-    return False
-
-
-def _goto_approach(place):
-    """Drive toward a place in view until the view matches strongly.
-    Steers like line following: stop and spin toward the place while
-    it is off-center, drive straight while it is centered. A blocked
-    path spins toward the clearer side instead of driving. Returns
-    True on arrival, False if the place is lost or time runs out."""
-    arrive_hits = 0
-    lost_since = None
-    start = time.time()
-    while time.time() - start < GOTO_APPROACH_TIMEOUT:
-        if not _goto_alive():
-            return False
-        frame = CAM.get_frame()
-        if frame is None:
-            time.sleep(0.05)
-            continue
-        blocked, frac, left_frac, right_frac = floor_obstacle(frame)
-        if blocked:
-            side = "left" if left_frac <= right_frac else "right"
-            goto_set_status(f"blocked — turning {side}")
-            apply_command(side, 100)
-            if not _goto_sleep(0.3):
-                return False
-            continue
-        name, score, cx = PLACES.recognize_detail(frame)
-        if name != place:
-            if lost_since is None:
-                lost_since = time.time()
-            if time.time() - lost_since > 3.0:
-                return False
-            apply_command("stop", 100)
-            time.sleep(0.1)
-            continue
-        lost_since = None
-        if score >= GOTO_ARRIVE_SCORE:
-            arrive_hits += 1
-            if arrive_hits >= 2:
-                return True
-        else:
-            arrive_hits = 0
-        if cx is None or abs(cx) <= GOTO_CENTER_TOL:
-            goto_set_status(f"going to {place} • {score}")
-            apply_drive(-1.0, -1.0)
-        else:
-            side = "left" if cx < 0 else "right"
-            goto_set_status(f"centering on {place} • turning {side}")
-            apply_command(side, 100)
-        time.sleep(0.1)
-    return False
-
-
-def _goto_timed_spin(side, seconds):
-    """Spin one way for a set time (a timed turn). False = cancelled."""
-    apply_command(side, 100)
-    ok = _goto_sleep(seconds)
-    apply_command("stop", 100)
-    return ok
-
-
-def _goto_action(action, next_target):
-    """Do a step's direction after arriving at its place. Returns
-    True to move on, False if the run should stop."""
-    if action == "left":
-        return _goto_timed_spin("left", TURN_90_TIME)
-    if action == "right":
-        return _goto_timed_spin("right", TURN_90_TIME)
-    if action == "straight":
-        end = time.time() + GOTO_STRAIGHT_TIME
-        while time.time() < end:
-            if not _goto_alive():
-                apply_command("stop", 100)
-                return False
-            apply_drive(-1.0, -1.0)
-            time.sleep(0.1)
-        apply_command("stop", 100)
-        return True
-    if action == "follow":
-        # Drive forward until the next target comes into view (or the
-        # path stays blocked too long). Obstacles detour like approach.
-        start = time.time()
-        while time.time() - start < GOTO_FOLLOW_TIMEOUT:
-            if not _goto_alive():
-                apply_command("stop", 100)
-                return False
-            frame = CAM.get_frame()
-            if frame is not None:
-                name, score, _ = PLACES.recognize_detail(frame)
-                if name == next_target and score >= PLACE_MATCH_MIN:
-                    apply_command("stop", 100)
-                    return True
-                blocked, frac, lf, rf = floor_obstacle(frame)
-                if blocked:
-                    side = "left" if lf <= rf else "right"
-                    apply_command(side, 100)
-                    if not _goto_sleep(0.3):
-                        return False
-                    continue
-            apply_drive(-1.0, -1.0)
-            time.sleep(0.1)
-        apply_command("stop", 100)
-        return False
-    return False
-
-
-def _goto_reach(place):
-    """Find a place and drive to it, with one retry if it is lost on
-    the way. True = arrived."""
-    for _ in range(2):
-        if not _goto_alive():
-            return False
-        if not _goto_search(place):
-            return False
-        if _goto_approach(place):
-            return True
-        goto_set_status(f"lost {place} — looking again…")
-    return False
-
-
-def _goto_run(route):
-    """Run a whole route, step by step, then the destination."""
-    steps = route.get("steps") or []
-    dest = route["destination"]
-    for i, step in enumerate(steps):
-        goto_set_status(f"step {i + 1}/{len(steps)}: "
-                        f"finding {step['place']}…")
-        if not _goto_reach(step["place"]):
-            if not _goto_alive():
-                return  # cancelled — goto_stop already ran
-            goto_stop(f"can't reach {step['place']} — stopped")
-            return
-        goto_set_status(f"at {step['place']} — {step['action']}")
-        nxt = steps[i + 1]["place"] if i + 1 < len(steps) else dest
-        if not _goto_action(step["action"], nxt):
-            if not _goto_alive():
-                return  # cancelled
-            goto_stop(f"lost the way after {step['place']} — stopped")
-            return
-    goto_set_status(f"finding {dest}…")
-    if not _goto_reach(dest):
-        if not _goto_alive():
-            return  # cancelled
-        goto_stop(f"can't reach {dest} — stopped")
-        return
-    goto_stop(f"arrived at {dest}")
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -1711,12 +1755,9 @@ class Handler(BaseHTTPRequestHandler):
                 return
             self._reply(stats)
             return
-        if self.path.startswith("/places"):
-            lines = [f"{n} ({k})" for n, k in PLACES.list_places()]
+        if self.path.startswith("/signs"):
+            lines = [f"{n} → {i}" for n, i in SIGNS.list_signs()]
             self._reply("\n".join(lines))
-            return
-        if self.path.startswith("/routes"):
-            self._reply(json.dumps({"routes": load_routes()}))
             return
         if self.path.startswith("/snapshot"):
             frame = CAM.get_frame()
@@ -1734,12 +1775,33 @@ class Handler(BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(jpg)
             return
-        if self.path.startswith("/place/current"):
-            self._reply(PLACE_STATE["current"] or "")
+        if self.path.startswith("/sign/current"):
+            self._reply(SIGN_RECOG["current"] or "")
             return
-        if self.path.startswith("/goto/active"):
-            with GOTO_LOCK:
-                self._reply("1" if GOTO["active"] else "0")
+        if self.path.startswith("/sign/active"):
+            with SIGNS_LOCK:
+                self._reply("1" if SIGNS_STATE["active"] else "0")
+            return
+        if self.path.startswith("/lidar"):
+            now = time.time()
+            with LIDAR_LOCK:
+                payload = {
+                    "online": LIDAR["online"] and
+                              now - LIDAR["updated"] < 1.0,
+                    "dist_m": LIDAR["dist_m"],
+                    "strength": LIDAR["strength"],
+                    "error": LIDAR["error"],
+                    "heading": HEADING["deg"],
+                    "trail": [[h, d, round(now - t, 1)]
+                              for h, d, t in TRAIL
+                              if now - t < TRAIL_MAX_AGE],
+                }
+            body = json.dumps(payload).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
             return
         if self.path.startswith("/video_feed"):
             self.handle_video()
@@ -1813,10 +1875,10 @@ class Handler(BaseHTTPRequestHandler):
                     avoid_was_on = AVOID["active"]
                 if avoid_was_on:
                     avoid_stop("auto on")
-                with GOTO_LOCK:
-                    goto_was_on = GOTO["active"]
-                if goto_was_on:
-                    goto_stop("auto on")
+                with SIGNS_LOCK:
+                    signs_was_on = SIGNS_STATE["active"]
+                if signs_was_on:
+                    sign_stop("auto on")
                 with AUTO_LOCK:
                     if AUTO["active"]:
                         AUTO["last_ping"] = time.time()
@@ -1855,10 +1917,10 @@ class Handler(BaseHTTPRequestHandler):
                     auto_was_on = AUTO["active"]
                 if auto_was_on:
                     auto_stop("avoid on")
-                with GOTO_LOCK:
-                    goto_was_on = GOTO["active"]
-                if goto_was_on:
-                    goto_stop("avoid on")
+                with SIGNS_LOCK:
+                    signs_was_on = SIGNS_STATE["active"]
+                if signs_was_on:
+                    sign_stop("avoid on")
                 with AVOID_LOCK:
                     if AVOID["active"]:
                         AVOID["last_ping"] = time.time()
@@ -1885,75 +1947,51 @@ class Handler(BaseHTTPRequestHandler):
             else:
                 self.send_error(404)
             return
-        if self.path.startswith("/route/save"):
-            try:
-                length = int(self.headers.get("Content-Length", 0))
-            except ValueError:
-                length = 0
-            try:
-                data = json.loads(self.rfile.read(length) or b"{}")
-            except Exception:
-                self._reply("bad route data", code=400)
-                return
-            ok, msg = save_route(data)
-            self._reply(msg, code=200 if ok else 400)
-            return
-        if self.path.startswith("/route/delete"):
-            q = parse_qs(urlparse(self.path).query)
-            name = _place_name_ok(q.get("name", [""])[0])
-            if delete_route(name):
-                self._reply(f'deleted route "{name}"')
-            else:
-                self._reply(f'no route named "{name}"', code=404)
-            return
-        if self.path.startswith("/goto/"):
+        if self.path.startswith("/sign/"):
             action = self.path.split("/")[2].split("?")[0]
             q = parse_qs(urlparse(self.path).query)
-            if action == "route":
-                route = get_route(_place_name_ok(q.get("name", [""])[0]))
-                if route is None:
-                    self._reply("no such route", code=404)
-                    return
-                ok, msg = goto_start(route)
-                self._reply(msg, code=200 if ok else 400)
-            elif action == "place":
-                place = (q.get("name", [""])[0] or "").strip()
-                known = {n for n, _ in PLACES.list_places()}
-                if place not in known:
-                    self._reply(f'"{place}" is not a saved place', code=404)
-                    return
-                route = {"name": f"Go to {place}", "destination": place,
-                         "steps": []}
-                ok, msg = goto_start(route)
-                self._reply(msg, code=200 if ok else 400)
-            elif action == "off":
-                goto_stop("stopped")
-                self._reply("goto off")
-            elif action == "ping":
-                with GOTO_LOCK:
-                    if GOTO["active"]:
-                        GOTO["last_ping"] = time.time()
-                    self._reply(GOTO["status"])
-            else:
-                self.send_error(404)
-            return
-        if self.path.startswith("/place/"):
-            action = self.path.split("/")[2].split("?")[0]
-            q = parse_qs(urlparse(self.path).query)
-            name = _place_name_ok(q.get("name", [""])[0])
             if action == "save":
+                name = _sign_name_ok(q.get("name", [""])[0])
+                instruction = (q.get("instruction", [""])[0] or "").strip()
                 frame = CAM.get_frame()
                 if frame is None:
                     self._reply("no frame yet — open the drive page first",
                                 code=503)
                     return
-                ok, msg = PLACES.save(name, frame)
+                ok, msg = SIGNS.save(name, frame, instruction)
                 self._reply(msg, code=200 if ok else 400)
             elif action == "delete":
-                if PLACES.delete(name):
-                    self._reply(f'deleted "{name}"')
+                name = _sign_name_ok(q.get("name", [""])[0])
+                if SIGNS.delete(name):
+                    self._reply(f'deleted sign "{name}"')
                 else:
-                    self._reply(f'no place named "{name}"', code=404)
+                    self._reply(f'no sign named "{name}"', code=404)
+            elif action == "on":
+                if not MOTORS_OK:
+                    self._reply("motors unavailable — check HAT/I2C on the Pi")
+                    return
+                ok, msg = sign_start()
+                self._reply(msg, code=200 if ok else 400)
+            elif action == "off":
+                sign_stop("stopped")
+                self._reply("signs off")
+            elif action == "ping":
+                with SIGNS_LOCK:
+                    if SIGNS_STATE["active"]:
+                        SIGNS_STATE["last_ping"] = time.time()
+                    self._reply(SIGNS_STATE["status"])
+            else:
+                self.send_error(404)
+            return
+        if self.path.startswith("/stabilize/"):
+            action = self.path.split("/")[2].split("?")[0]
+            if action == "on":
+                STABILIZE["on"] = True
+                STABILIZER.reset()
+                self._reply("stabilization on")
+            elif action == "off":
+                STABILIZE["on"] = False
+                self._reply("stabilization off")
             else:
                 self.send_error(404)
             return
@@ -1976,7 +2014,7 @@ class Handler(BaseHTTPRequestHandler):
         # Any manual button press cancels a 180° spin mid-turn.
         with SPIN_LOCK:
             SPIN["cancel"] = True
-        # Any manual button press takes over from auto / avoid / goto
+        # Any manual button press takes over from auto / avoid / signs
         # instantly.
         with AUTO_LOCK:
             auto_was_on = AUTO["active"]
@@ -1986,10 +2024,14 @@ class Handler(BaseHTTPRequestHandler):
             avoid_was_on = AVOID["active"]
         if avoid_was_on:
             avoid_stop("manual override")
-        with GOTO_LOCK:
-            goto_was_on = GOTO["active"]
-        if goto_was_on:
-            goto_stop("manual override")
+        with SIGNS_LOCK:
+            signs_was_on = SIGNS_STATE["active"]
+        if signs_was_on:
+            sign_stop("manual override")
+        # Manual driving invalidates the radar trail's heading
+        # estimate — drop it so the picture restarts clean.
+        with LIDAR_LOCK:
+            TRAIL.clear()
         speed = STATE["speed"] * 100
         if "speed=" in self.path:
             try:
@@ -2011,9 +2053,10 @@ class Handler(BaseHTTPRequestHandler):
 
 if __name__ == "__main__":
     threading.Thread(target=watchdog, daemon=True).start()
+    threading.Thread(target=lidar_loop, daemon=True).start()
     threading.Thread(target=auto_loop, daemon=True).start()
     threading.Thread(target=avoid_loop, daemon=True).start()
-    threading.Thread(target=place_loop, daemon=True).start()
+    threading.Thread(target=sign_loop, daemon=True).start()
     server = ThreadingHTTPServer(("0.0.0.0", 8001), Handler)
     print("Rover drive page at http://localhost:8001  (Ctrl+C to stop)",
           flush=True)

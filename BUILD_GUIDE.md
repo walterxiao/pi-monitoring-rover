@@ -317,100 +317,109 @@ whether the tape is in view at all.
 ## Phase 8 — Obstacle avoid: the rover explores on its own
 
 The rover can wander a room on its own and steer around obstacles —
-no remote control needed while it's running. It has no depth sensor,
-so it judges obstacles from the camera image alone.
+no remote control needed while it's running. Since Nov 13 the
+TF-Luna LiDAR is the primary sensor: it measures the real distance
+straight ahead, and the camera is only the fallback and the
+turn-direction picker.
 
 **How it works:** it drives continuously — no stopping to scan — and
-checks the latest camera frame about 10 times a second, comparing
-the path ahead against the floor color — the floor just under the
-camera is the reference. If the way ahead looks like floor, it keeps
-driving forward; if a chunk of the path ahead doesn't look like
-floor, it spins in place toward the clearer side until the way
-clears. It commits to a turn direction — it won't flip-flop
-left/right — and if a full turn doesn't clear the path it backs up
-for a second to get space and tries turning again. If it's blocked
-on all sides for 10 seconds straight it stops and says "stuck".
+checks the LiDAR distance about 10 times a second. Clear (over
+0.5 m ahead) it keeps driving forward; blocked (under 0.5 m) it
+spins toward the clearer side, using the camera's floor check
+(bottom third of the frame vs the floor color) to pick the side;
+too close (under 0.25 m) it backs up for space instead of turning.
+It commits to a turn direction — it won't flip-flop left/right —
+and if a full turn doesn't clear the path it backs up for a second
+to get space and tries turning again. If it turns a bit and is
+still very close, it backs up instead of keep turning — a wall or
+a wide obstacle field is better escaped backward than spun into.
+If it's blocked on all sides for 10 seconds straight it stops and
+says "stuck". If the LiDAR is offline (adapter unplugged, pyserial
+missing, stale readings) the loop falls back to the old
+camera-only floor-color logic automatically, and the status line
+says `camera (lidar offline)` so you know which sensor is driving.
 
 **Run it:** on the drive page, tap **🚧 Obstacle Avoid**. The video
-shows a **yellow box** — that's the look-ahead zone it checks. The
-status line tells you what it's doing: `clear (3% ahead) — driving`,
-`blocked (42%) — turning left`, `backing up`, or
-`stuck — blocked on all sides`.
-Tap the button again to stop, or tap any D-pad button — manual control
-takes over instantly. It won't run at the same time as Line Follow;
-turning one on turns the other off.
+shows a **yellow box** around the bottom third — that's the zone the
+camera checks for the turn direction. The status line tells you what
+it's doing: `lidar 1.24m — driving`, `lidar 0.38m — turning left`,
+`lidar 0.18m — too close, backing up`, or `stuck — blocked on all
+sides`. Tap the button again to stop, or tap any D-pad button —
+manual control takes over instantly. It won't run at the same time
+as Line Follow; turning one on turns the other off.
 
-**Set up:** works best on a plain, evenly lit hard floor with the
-camera tilted down like Phase 7. Clear the room of small stuff first
-— the camera can't see things right at the nose, and a low obstacle
-can hide under the view. Keep the first run short and watch it.
+**Radar (bird's-eye view):** the top-right **📡 Radar** panel shows
+the rover in the middle with recent LiDAR readings plotted around
+it — the green dot is the live reading straight ahead, yellow dots
+are the last few seconds of readings. Rings are 1 m / 2 m / 3 m.
+Honest limit: there is no gyro, encoder, or position tracking, so
+the heading is dead reckoning from commanded turns and the picture
+is only good for a few seconds while the rover turns in place or
+sits still — it fades fast on purpose. The live distance number is
+always exact; the trail is a rough sketch.
 
-**Limits, honestly:** it can't judge exact distance — it only knows
-"the path ahead doesn't look like floor". A patterned floor, a rug,
-a dark shiny object, or a shadow can confuse it (it may turn for no
-reason, or miss a glass or low obstacle). If it turns too
-often, the floor is probably too patterned for this method.
+**Set up:** the TF-Luna kit (youyeetoo, USB-TTL adapter included)
+wires TX → adapter RX, RX → TX, GND → GND, VCC → adapter 5V, with
+the adapter jumper on 3.3V, plugged into a Pi USB port
+(`/dev/ttyUSB0`). On the Pi, once: `sudo apt install -y
+python3-serial` and `sudo usermod -aG dialout xiao` (serial-port
+permission), then restart the server. The 3D-printed holder mounts
+the sensor on the chassis nose (see the MakerWorld model). Clear
+the room of small stuff for the first run — the beam sits a few cm
+up, so very low obstacles can hide under it. Keep the first run
+short and watch it.
 
-## Phase 9 — Place memory: the rover remembers rooms
+**Limits, honestly:** the LiDAR is one beam straight ahead — it
+can't see to the sides, and it can't see glass or very dark/shiny
+surfaces well. The camera fallback still false-triggers on
+patterned floors and rugs when the LiDAR is offline. Distance under
+0.2 m is unreliable (the sensor's own limit).
 
-The rover can remember what a place looks like and recognize it
-later — no markers, no GPS, just the camera.
+## Phase 9 — Signs: the rover follows hand-drawn signs
 
-**How it works:** when you save a place, it takes the current view
-and stores its visual fingerprint (ORB keypoints — distinctive
-corners and patterns in the image) in a `places/` folder on the Pi,
-not the photo itself. About once a second it compares the live view
-against every saved place and shows the best match at the top-right
-of the drive page ("📍 Kitchen"). A place counts as recognized with
-at least 30 good matches — real matches score in the hundreds.
+Draw a sign on paper — an arrow, a shape, a symbol, anything
+distinctive — and tape it where the rover should act. The rover
+learns what the sign looks like, then follows a trail of signs on
+its own, running each sign's instruction when it reaches it.
 
-**Run it:** on the drive page, tap **📍 Save place**. A panel opens
-showing a snapshot of the current view — that's exactly what it will
-remember — type a name and tap **Save**. **📍 Places** lists what
-you've saved, with a **Go** button (drives there, see Phase 10) and
-a ✕ to delete.
+**How it works:** when you record a sign, the rover takes the
+current view and stores its visual fingerprint (ORB keypoints —
+distinctive corners and patterns in the image) plus how big the
+sign looked in the frame, in a `signs/` folder on the Pi, not the
+photo itself. Tap **🪧 Follow signs** and the rover drives forward
+on its own at 70% speed (50% won't move the loaded rover; full power
+shakes the video — turns stay at 100% because their 90° timing was
+calibrated there), watching for recorded signs. A sign only counts when
+it looks about as big as when you recorded it (70–150% of the
+recorded size) — so the rover acts at the right spot, not from
+across the room. When a sign fires, the rover runs its instruction:
+turn left, turn right, go straight, back up, or stop. The same sign
+can't fire again for 5 seconds.
 
-**Limits, honestly:** it recognizes a place from a similar angle and
-lighting. A big lighting change, or approaching from the opposite
-side, can miss. If it claims the wrong place, the match threshold
-(`PLACE_MATCH_MIN` in rover_server.py) can be raised; if it misses
-a place it should know, lower it.
+**Run it:** drive the rover up to a sign so it fills a good part of
+the view, then tap **🪧 Record sign**. A panel opens showing a
+snapshot — that's exactly what it will remember — type a name, pick
+the instruction, tap **Save**. **🪧 Signs** lists what you've saved,
+with a ✕ to delete. Then tap **🪧 Follow signs** and watch it go.
+The top-right of the page shows the last sign it saw ("🪧 arrow-left").
+Tap the button again (or any D-pad button) to stop, and it stops if
+the page loses contact for 3 seconds.
 
-## Phase 10 — Routes: the rover drives itself to a place
+**Tips:** draw bold, high-contrast signs — thick black marker on
+white paper works best. Fill a good part of the view when recording.
+Record each sign from the distance the rover will approach it from,
+since size is the trigger. If a sign never fires, it was probably
+recorded too small or too faint — re-record closer and bolder. If
+it fires too early or from too far, the size window
+(`SIGN_SIZE_MIN` / `SIGN_SIZE_MAX` in rover_server.py) can be
+tightened.
 
-Places chain together into routes. A route is a destination plus
-steps; each step is a place to find plus a direction to take there
-(turn left, turn right, follow, go straight). Example: Kitchen →
-Piano Room via [find Sofa, turn left] [find Restroom, turn right]
-[follow Hallway].
-
-**How it works:** for each step the rover spins in place in small
-steps, checking each frame, until the step's place is in view — then
-it drives toward it, steering to keep it centered (same idea as line
-following), until the view matches strongly. Then it does the step's
-direction: a turn is a timed spin (90° is about 0.75 s, from the
-180° spin), "follow" means drive forward until the next place
-appears, "straight" means drive forward a couple of seconds. Every
-step starts with a full scan, so a sloppy timed turn can't throw off
-the rest of the route. Obstacle avoid runs during the drive parts —
-if something blocks the way it detours, then looks for the place
-again. If a step's place can't be found after a full spin, it stops
-and says which step failed.
-
-**Run it:** on the drive page, tap **🗺️ Routes**. Saved routes are
-listed with **Go**; below, the builder: name the route, pick the
-destination, add steps (place + direction each), **Save route**. A
-single place needs no route — tap **Go** next to it in 📍 Places.
-While a route runs, a red **■ Stop** button appears top-right; any
-D-pad button also cancels it, and it stops if the page loses contact
-for 3 seconds.
-
-**Limits, honestly:** this only works with line of sight per step —
-the rover can't see around a corner, which is exactly why routes
-exist (each step brings the next place into view). Turns are timed,
-not measured, so a turn may over- or undershoot; the scan at the
-next step corrects it. A motion sensor (MPU6050) would make turns
-exact — a possible later upgrade.
+**Limits, honestly:** it recognizes a sign from a similar angle and
+lighting. A big lighting change, or approaching from a very
+different angle, can miss. Turns are timed (90° is about 0.75 s,
+from the 180° spin), not measured, so a turn may over- or
+undershoot. A motion sensor (MPU6050) would make turns exact — a
+possible later upgrade.
 
 ---
 
@@ -424,14 +433,17 @@ exact — a possible later upgrade.
 | Pi reboots when motors start | Motors sharing Pi power | They must not — battery box feeds motors only |
 | `throttled` isn't 0x0 | Power bank can't keep up | Try the bank's other USB-C port; shorter/thicker cable |
 | Drive page loads but the D-pad does nothing | rover_server not running, or wrong port | Check the terminal window; it's port **8001** |
+| Buttons do nothing, video works, no request reaches the server | JavaScript error on the page | Open the browser console (Cmd+Option+J on Mac) and read the red error — a SyntaxError means the page's code is broken; reinstall the latest rover_server.py |
+| Video too shaky while driving | Motor vibration shakes the rigid camera mount | Built-in stabilization is on by default (📹 Stabilize button, top-right) — it smooths the shake without hiding the driving motion. If it's still shaky, a foam/rubber pad under the camera mount damps the vibration at the source |
 | Camera stopped working | Ribbon cable jogged loose | Reseat it, tape a strain-relief loop |
 
 ---
 
 ## What's deliberately NOT in v1
 
-- No depth sensor — obstacle avoid judges from the camera image only
-  (see Phase 8); it can't measure exact distance.
+- No 360° sensing — the TF-Luna is one beam straight ahead (see
+  Phase 8); a spinning LiDAR + SLAM would be needed for a real
+  house map.
 - No charging-while-driving — unplug, charge the bank, plug back in.
 - The plant capture schedule still runs wherever the Pi happens to be
   parked. If a scheduled photo matters, park at a station before it fires.
