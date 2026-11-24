@@ -12,7 +12,8 @@ left corner, overlaid on the video: ▲ forward, ▼ reverse, ◀ ▶ spin in
 place — ◀ is left wheels backward + right wheels forward (turn left),
 ▶ is the reverse (turn right). That's how a 4WD car turns, there's
 no steering wheel. Hold a button to drive, let go to stop. Drive
-speed is fixed at full (100%).
+speed is fixed at full (100%). On a computer the keyboard arrow keys
+drive the same way: hold an arrow to move, let go to stop.
 The button in the center of the D-pad (↻ 180°) spins the rover a
 half-turn in place: tap it once and it turns around by itself. Any
 D-pad button cancels the spin mid-turn. The spin is timed, not
@@ -34,37 +35,35 @@ arriving, so the rover can never run away on its own.
 
 OBSTACLE AVOID: tap "🚧 Obstacle Avoid" and the rover explores on its
 own, keeping away from obstacles. The TF-Luna LiDAR measures the
-distance straight ahead about 100 times a second: clear (over 0.5 m)
-it keeps driving forward; blocked (under 0.5 m) it spins toward the
-clearer side, using the camera's floor check to pick the side; too
-close (under 0.25 m) it backs up for space instead of turning. If the
-LiDAR is offline the loop falls back to the camera-only floor-color
-logic, so the mode still works with the sensor unplugged. Escape
+distance straight ahead about 100 times a second: clear (at or
+beyond the minimum distance picked on the drive page, 0.5 m by
+default, or nothing in range) it keeps driving forward; blocked
+(under the picked distance) it spins left in place; too close
+(under 0.25 m) it backs up for space instead of turning. If the
+LiDAR is offline the rover stops and waits — it
+never drives blind. Escape
 moves are committed, never flip-flopped: it keeps turning one way (up
 to a full turn) instead of switching left/right every frame, and if
 turning doesn't clear the path it backs up for a second to get space
 and tries turning again. If it's blocked on all sides for 10 seconds
 straight it stops and says "stuck". Same safety as line following:
 any D-pad button takes over instantly, and it stops if the page
-loses contact for 3 seconds. The drive page also shows a bird's-eye
+loses contact for 3 seconds. The video shows a cyan marker at the
+center where the LiDAR beam points, labeled with the live distance
+("inf" when nothing is in range). The drive page also shows a bird's-eye
 radar view (top right): the rover in the middle, recent distance
-readings plotted around it. The radar is rough — there is no gyro or
+readings plotted around it, a dashed red ring at the picked minimum
+distance, and ∞ when nothing is in range. The radar is rough — there is no gyro or
 position tracking, so the picture is only good for a few seconds
 while the rover turns or sits still.
 
-SIGNS: draw a sign on paper (an arrow, a shape, a symbol — anything
-distinctive) and tape it where the rover should act. Drive the rover
-up to it, tap "🪧 Record sign", and give it a name plus the
-instruction it means (turn left, turn right, go straight, back up,
-stop). The rover saves the sign's visual fingerprint (ORB keypoints,
-not the photo itself) plus how big it looked in the frame, in a
-signs/ folder on the Pi. Then tap "🪧 Follow signs": the rover drives
-forward on its own, and when it sees a sign at about the recorded
-size it runs that sign's instruction. Size is the trigger distance —
-a sign only fires when it looks about as big as when you recorded
-it, so the rover acts at the right spot, not from across the room.
-Same safety as the other modes: any D-pad button cancels, and it
-stops if the page loses contact for 3 seconds.
+LD19: the spinning LiDAR (youyeetoo FHL-LD19 kit) is the mapping
+sensor. It spins ~10 times a second and measures a full 360-degree
+scan, and the drive page's radar draws that scan as cyan dots around
+the rover. Obstacle avoid still uses the TF-Luna's single forward
+beam. The LD19's 0-degree direction is the sensor's front; if the
+scan looks rotated or mirrored once the sensor is mounted, the
+LD19_ANGLE_OFFSET in the code rotates it in software.
 
 The camera is shared: one background thread captures frames, and both
 the video stream and the line follower read the latest frame, so you
@@ -85,6 +84,7 @@ Same shape as plant-monitor's serve.py (stdlib http.server), on port
 """
 import io
 import json
+import math
 import os
 import re
 import subprocess
@@ -118,7 +118,10 @@ except Exception:
     cv2 = None
     CV2_OK = False
 
-STATE = {"last_cmd_time": 0.0, "moving": False, "speed": 1.0}
+STATE = {"last_cmd_time": 0.0, "moving": False, "speed": 1.0,
+         "throttle_l": 0.0, "throttle_r": 0.0}  # last commanded
+# motor throttles (-1..1, negative = forward) — the pose thread
+# reads these to dead-reckon where the rover is for the map.
 LOCK = threading.Lock()
 
 PAGE = """<!DOCTYPE html>
@@ -148,7 +151,7 @@ PAGE = """<!DOCTYPE html>
            border-radius: 20px; border: none;
            background: rgba(45,55,72,0.8); color: #fff; }
   #radartoggle.on { background: rgba(56,161,105,0.9); }
-  #radar { top: 178px; right: 12px; width: 200px; height: 200px;
+  #radar { top: 178px; right: 12px; width: 300px; height: 300px;
            border-radius: 12px; background: rgba(0,0,0,0.55);
            pointer-events: none; }
   #autotoggle { top: 52px; left: 16px; font-size: 16px; padding: 8px 14px;
@@ -159,40 +162,26 @@ PAGE = """<!DOCTYPE html>
            border-radius: 20px; border: none;
            background: rgba(45,55,72,0.8); color: #fff; }
   #avoidtoggle.on { background: rgba(56,161,105,0.9); }
-  #signtoggle { top: 136px; left: 16px; font-size: 16px; padding: 8px 14px;
+  #mindistctl { top: 136px; left: 16px; font-size: 14px; padding: 8px 12px;
+           border-radius: 20px; background: rgba(45,55,72,0.8);
+           color: #fff; display: flex; gap: 8px; align-items: center; }
+  #mindistctl input { width: 88px; accent-color: #48bb78; }
+  #mindistval { min-width: 46px; }
+  #maptoggle { top: 178px; left: 16px; font-size: 16px; padding: 8px 14px;
            border-radius: 20px; border: none;
            background: rgba(45,55,72,0.8); color: #fff; }
-  #signtoggle.on { background: rgba(56,161,105,0.9); }
-  #signrecordbtn { top: 178px; left: 16px; font-size: 16px; padding: 8px 14px;
-           border-radius: 20px; border: none;
-           background: rgba(45,55,72,0.8); color: #fff; }
-  #signlistbtn { top: 220px; left: 16px; font-size: 16px; padding: 8px 14px;
-           border-radius: 20px; border: none;
-           background: rgba(45,55,72,0.8); color: #fff; }
-  #sign { top: 52px; right: 12px; font-size: 16px; font-weight: 600;
-           text-shadow: 0 1px 4px rgba(0,0,0,0.8); }
-  #signspanel { top: 262px; left: 16px; font-size: 16px;
-           background: rgba(0,0,0,0.65); border-radius: 12px;
-           padding: 10px 12px; display: none; max-width: 70vw; }
-  #signspanel button { margin-left: 8px; font-size: 14px;
-           border-radius: 10px; border: none;
-           background: rgba(197,48,48,0.85); color: #fff; padding: 2px 8px; }
-  .panel { top: 50%; left: 50%; transform: translate(-50%, -50%);
-           width: 86vw; max-width: 420px; max-height: 72vh; overflow: auto;
-           background: rgba(20,24,32,0.96); border-radius: 14px;
-           padding: 14px 16px; display: none; font-size: 16px; }
-  .panel h3 { margin: 0 0 10px 0; font-size: 18px; }
-  .panel input, .panel select { font-size: 16px; padding: 8px; margin: 4px 0;
-           border-radius: 8px; border: 1px solid #4a5568; width: 100%;
-           background: #2d3748; color: #fff; box-sizing: border-box; }
-  .panel button { font-size: 16px; padding: 8px 14px; margin: 4px 4px 4px 0;
-           border-radius: 12px; border: none;
-           background: rgba(43,108,176,0.9); color: #fff; }
-  .panel button.danger { background: rgba(197,48,48,0.85); }
-  .panel button.ghost { background: rgba(74,85,104,0.9); }
-  .panel .row { display: flex; gap: 6px; align-items: center; }
-  .panel .row select { flex: 1; }
-  #signshot { width: 100%; border-radius: 10px; margin: 4px 0; }
+  #maptoggle.on { background: rgba(56,161,105,0.9); }
+  #mappanel { top: 60px; left: 50%; transform: translateX(-50%);
+           width: min(92vw, 420px); background: rgba(0,0,0,0.85);
+           border: 1px solid rgba(255,255,255,0.25); border-radius: 12px;
+           padding: 10px; display: none; z-index: 20; }
+  #mapimg { width: 100%; aspect-ratio: 1; display: block;
+           border-radius: 8px; background: #222; }
+  #mapstats { font-size: 13px; color: #a0aec0; margin: 8px 2px 4px; }
+  #mapbtns { display: flex; gap: 8px; }
+  #mapbtns button { flex: 1; font-size: 15px; padding: 8px 10px;
+           border-radius: 16px; border: none;
+           background: rgba(45,55,72,0.9); color: #fff; }
   #camerr { top: 50%; left: 50%; transform: translate(-50%, -50%);
            color: #fc8181; font-size: 18px; text-align: center;
            text-shadow: 0 1px 4px rgba(0,0,0,0.8); display: none; }
@@ -220,30 +209,21 @@ PAGE = """<!DOCTYPE html>
   <button id="camtoggle" class="overlay">\U0001F4F7 Camera: On</button>
   <button id="stabtoggle" class="overlay">\U0001F4F9 Stabilize: On</button>
   <button id="radartoggle" class="overlay">\U0001F4E1 Radar: On</button>
-  <canvas id="radar" class="overlay" width="200" height="200"></canvas>
+  <canvas id="radar" class="overlay" width="300" height="300"></canvas>
   <button id="autotoggle" class="overlay">\U0001F916 Line Follow: Off</button>
   <button id="avoidtoggle" class="overlay">\U0001F6A7 Obstacle Avoid: Off</button>
-  <button id="signtoggle" class="overlay">\U0001FAA7 Follow signs: Off</button>
-  <button id="signrecordbtn" class="overlay">\U0001FAA7 Record sign</button>
-  <button id="signlistbtn" class="overlay">\U0001FAA7 Signs</button>
-  <div id="sign" class="overlay">\U0001FAA7 &mdash;</div>
-  <div id="signspanel" class="overlay"></div>
-  <div id="capturepanel" class="overlay panel">
-    <h3>\U0001FAA7 Record this sign</h3>
-    <img id="signshot" alt="Current view">
-    <input id="signname" type="text" placeholder="Sign name" maxlength="30">
-    <div>Instruction:</div>
-    <select id="signinstruction">
-      <option value="left">Turn left</option>
-      <option value="right">Turn right</option>
-      <option value="straight">Go straight</option>
-      <option value="back">Back up</option>
-      <option value="stop">Stop</option>
-    </select>
-    <div>
-      <button id="signsave">Save</button>
-      <button id="signretake" class="ghost">Retake</button>
-      <button id="signclose" class="ghost">Close</button>
+  <div id="mindistctl" class="overlay">
+    <label for="mindist">Min dist</label>
+    <input id="mindist" type="range" min="0.3" max="2" step="0.05" value="0.5">
+    <span id="mindistval">0.50 m</span>
+  </div>
+  <button id="maptoggle" class="overlay">\U0001F5FA Map: Off</button>
+  <div id="mappanel" class="overlay">
+    <img id="mapimg" src="/map.png" alt="Rover map">
+    <div id="mapstats">map loading…</div>
+    <div id="mapbtns">
+      <button id="mapclear">Clear map</button>
+      <button id="mapclose">Close</button>
     </div>
   </div>
   <div id="camerr" class="overlay">Camera unavailable &mdash; check the Pi
@@ -283,7 +263,6 @@ PAGE = """<!DOCTYPE html>
     autotoggle.classList.toggle('on', on);
     if (on) {
       if (avoidOn) setAvoid(false);
-      setSignFollow(false);
       fetch('/auto/on', {method: 'POST'})
         .then(r => r.text()).then(t => status.textContent = t);
       autoTimer = setInterval(() => {
@@ -308,7 +287,6 @@ PAGE = """<!DOCTYPE html>
     avoidtoggle.classList.toggle('on', on);
     if (on) {
       if (autoOn) setAuto(false);
-      setSignFollow(false);
       fetch('/avoid/on', {method: 'POST'})
         .then(r => r.text()).then(t => status.textContent = t);
       avoidTimer = setInterval(() => {
@@ -323,6 +301,24 @@ PAGE = """<!DOCTYPE html>
     }
   }
   avoidtoggle.addEventListener('click', () => setAvoid(!avoidOn));
+  // Minimum avoidance distance picker: avoid turns when something
+  // is closer than this (0.30–2.00 m, 0.50 m default). The label
+  // follows the slider live; the value is sent when released.
+  // Blur after sending so arrow keys drive again right away.
+  const mindist = document.getElementById('mindist');
+  const mindistval = document.getElementById('mindistval');
+  function showMindist() {
+    mindistval.textContent = parseFloat(mindist.value).toFixed(2) + ' m';
+  }
+  mindist.addEventListener('input', showMindist);
+  mindist.addEventListener('change', () => {
+    showMindist();
+    fetch('/avoid/mindist?m=' + mindist.value, {method: 'POST'})
+      .then(r => r.text()).then(t => status.textContent = t)
+      .catch(() => status.textContent = 'no connection');
+    mindist.blur();
+  });
+  showMindist();
   // D-pad buttons: hold to move, let go to stop. Pressing one while
   // auto is on switches back to manual first.
   document.querySelectorAll('button[data-cmd]').forEach(b => {
@@ -331,19 +327,62 @@ PAGE = """<!DOCTYPE html>
       e.preventDefault();
       if (autoOn) setAuto(false);
       if (avoidOn) setAvoid(false);
-      setSignFollow(false);
       start(cmd);
     });
     b.addEventListener('pointerup', halt);
     b.addEventListener('pointerleave', halt);
     b.addEventListener('pointercancel', halt);
   });
+  // Arrow keys drive too: hold an arrow to move, let go to stop.
+  // Same commands and heartbeat as the D-pad; the most recently
+  // pressed held key wins, and releasing it falls back to any other
+  // arrow still held. Ignored while typing in a field (e.g. the Min
+  // dist slider). Losing page focus stops the rover, and the server
+  // watchdog is the final backstop if a key-up is ever missed.
+  const KEY_CMDS = {ArrowUp: 'forward', ArrowDown: 'back',
+                    ArrowLeft: 'left', ArrowRight: 'right'};
+  const heldKeys = [];  // arrow keys currently held, most recent last
+  let keyCmd = null;
+  function keyDrive() {
+    const cur = heldKeys.length ?
+      KEY_CMDS[heldKeys[heldKeys.length - 1]] : null;
+    if (cur === keyCmd) return;
+    if (timer) { clearInterval(timer); timer = null; }
+    if (cur) {
+      if (autoOn) setAuto(false);
+      if (avoidOn) setAvoid(false);
+      keyCmd = cur;
+      start(cur);
+    } else {
+      keyCmd = null;
+      halt();
+    }
+  }
+  document.addEventListener('keydown', e => {
+    if (!KEY_CMDS[e.key]) return;
+    const t = e.target;
+    if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' ||
+              t.tagName === 'SELECT' || t.isContentEditable)) return;
+    e.preventDefault();
+    if (e.repeat) return;  // heartbeat already running for this key
+    if (!heldKeys.includes(e.key)) heldKeys.push(e.key);
+    keyDrive();
+  });
+  document.addEventListener('keyup', e => {
+    const i = heldKeys.indexOf(e.key);
+    if (i === -1) return;
+    heldKeys.splice(i, 1);
+    keyDrive();
+  });
+  window.addEventListener('blur', () => {
+    heldKeys.length = 0;
+    keyDrive();
+  });
   // Center button: spin 180° in place. One tap, the rover turns
   // around and stops by itself. Any D-pad button cancels it mid-spin.
   document.getElementById('spinbtn').addEventListener('click', () => {
     if (autoOn) setAuto(false);
     if (avoidOn) setAvoid(false);
-    setSignFollow(false);
     fetch('/spin180', {method: 'POST'})
       .then(r => r.text()).then(t => status.textContent = t)
       .catch(() => status.textContent = 'no connection');
@@ -374,109 +413,6 @@ PAGE = """<!DOCTYPE html>
       .then(r => r.text()).then(t => status.textContent = t)
       .catch(() => status.textContent = 'no connection');
   });
-  // Signs: record the sign in view under a name + instruction, and
-  // show the sign the rover thinks it sees (checked every 2 s).
-  const signEl = document.getElementById('sign');
-  const signsPanel = document.getElementById('signspanel');
-  function refreshSign() {
-    fetch('/sign/current')
-      .then(r => r.text())
-      .then(t => signEl.textContent = t ? '\U0001FAA7 ' + t : '\U0001FAA7 —')
-      .catch(() => {});
-  }
-  setInterval(refreshSign, 2000);
-  refreshSign();
-  // Capture panel: shows a snapshot of the current view so you can
-  // see exactly what you are recording, then names the sign and
-  // picks its instruction.
-  const capturePanel = document.getElementById('capturepanel');
-  const signshot = document.getElementById('signshot');
-  const signname = document.getElementById('signname');
-  const signinstruction = document.getElementById('signinstruction');
-  function loadSnapshot() {
-    signshot.src = '/snapshot?' + Date.now();
-  }
-  document.getElementById('signrecordbtn').addEventListener('click', () => {
-    capturePanel.style.display = 'block';
-    signname.value = '';
-    loadSnapshot();
-  });
-  document.getElementById('signretake').addEventListener('click', loadSnapshot);
-  document.getElementById('signclose').addEventListener('click', () => {
-    capturePanel.style.display = 'none';
-  });
-  document.getElementById('signsave').addEventListener('click', () => {
-    const name = signname.value.trim();
-    if (!name) { status.textContent = 'type a name for this sign first'; return; }
-    fetch('/sign/save?name=' + encodeURIComponent(name) +
-          '&instruction=' + encodeURIComponent(signinstruction.value),
-          {method: 'POST'})
-      .then(r => r.text()).then(t => {
-        status.textContent = t;
-        capturePanel.style.display = 'none';
-        refreshSign();
-      })
-      .catch(() => status.textContent = 'no connection');
-  });
-  document.getElementById('signlistbtn').addEventListener('click', () => {
-    if (signsPanel.style.display === 'block') {
-      signsPanel.style.display = 'none';
-      return;
-    }
-    fetch('/signs')
-      .then(r => r.text())
-      .then(t => {
-        const lines = t.split('\\n').filter(Boolean);
-        signsPanel.innerHTML = lines.length
-          ? lines.map(n => {
-              const name = n.substring(0, n.lastIndexOf(' →'));
-              return '<div>' + n +
-                ' <button data-name="' + name + '">✕</button></div>';
-            }).join('')
-          : 'No signs saved yet.';
-        signsPanel.style.display = 'block';
-        signsPanel.querySelectorAll('button[data-name]').forEach(b => {
-          b.addEventListener('click', () => {
-            fetch('/sign/delete?name=' + encodeURIComponent(b.dataset.name),
-                  {method: 'POST'})
-              .then(r => r.text()).then(t => {
-                status.textContent = t;
-                signsPanel.style.display = 'none';
-                refreshSign();
-              });
-          });
-        });
-      })
-      .catch(() => status.textContent = 'no connection');
-  });
-  // Follow-signs toggle. Same heartbeat pattern as line follow and
-  // obstacle avoid: the rover drives forward and runs a sign's
-  // instruction when it sees one at about the recorded size.
-  const signtoggle = document.getElementById('signtoggle');
-  let signOn = false;
-  let signTimer = null;
-  function setSignFollow(on) {
-    if (on === signOn) return;
-    signOn = on;
-    signtoggle.textContent = '\U0001FAA7 Follow signs: ' + (on ? 'On' : 'Off');
-    signtoggle.classList.toggle('on', on);
-    if (on) {
-      if (autoOn) setAuto(false);
-      if (avoidOn) setAvoid(false);
-      fetch('/sign/on', {method: 'POST'})
-        .then(r => r.text()).then(t => status.textContent = t);
-      signTimer = setInterval(() => {
-        fetch('/sign/ping', {method: 'POST'})
-          .then(r => r.text()).then(t => status.textContent = t)
-          .catch(() => { setSignFollow(false); status.textContent = 'no connection'; });
-      }, 1000);
-    } else {
-      if (signTimer) { clearInterval(signTimer); signTimer = null; }
-      fetch('/sign/off', {method: 'POST'})
-        .then(r => r.text()).then(t => status.textContent = t);
-    }
-  }
-  signtoggle.addEventListener('click', () => setSignFollow(!signOn));
   // Radar: bird's-eye view from the TF-Luna. The rover sits in the
   // middle pointing up; each dot is a recent distance reading,
   // plotted where it was taken. Dots fade after a few seconds —
@@ -494,9 +430,9 @@ PAGE = """<!DOCTYPE html>
   });
   radartoggle.classList.toggle('on', true);
   const RADAR_MAX_M = 3.0;   // edge of the circle = 3 m
-  function drawRadar(data) {
+  function drawRadar(data, ld19) {
     const W = radar.width, H = radar.height, cx = W / 2, cy = H / 2;
-    const R = 92;            // pixels to the 3 m ring
+    const R = 138;           // pixels to the 3 m ring
     rctx.clearRect(0, 0, W, H);
     rctx.strokeStyle = 'rgba(255,255,255,0.25)';
     rctx.lineWidth = 1;
@@ -506,32 +442,43 @@ PAGE = """<!DOCTYPE html>
       rctx.stroke();
     });
     rctx.fillStyle = 'rgba(255,255,255,0.5)';
-    rctx.font = '10px sans-serif';
+    rctx.font = '13px sans-serif';
     rctx.fillText('1m', cx + 3, cy - R / 3 + 3);
     rctx.fillText('2m', cx + 3, cy - 2 * R / 3 + 3);
     rctx.fillText('3m', cx + 3, cy - R + 10);
+    if (data && data.stop_m) {
+      // Dashed red ring = the picked minimum avoidance distance.
+      const sr = R * Math.min(data.stop_m, RADAR_MAX_M) / RADAR_MAX_M;
+      rctx.strokeStyle = 'rgba(252,129,129,0.8)';
+      rctx.setLineDash([4, 4]);
+      rctx.beginPath();
+      rctx.arc(cx, cy, sr, 0, 2 * Math.PI);
+      rctx.stroke();
+      rctx.setLineDash([]);
+    }
     if (!data || !data.online) {
       rctx.fillStyle = '#fc8181';
-      rctx.font = '13px sans-serif';
+      rctx.font = '16px sans-serif';
       rctx.textAlign = 'center';
       rctx.fillText('LiDAR offline', cx, cy + 30);
-      rctx.font = '11px sans-serif';
+      rctx.font = '13px sans-serif';
       rctx.fillText((data && data.error) || 'no data', cx, cy + 48);
       rctx.textAlign = 'left';
     } else {
       const heading = data.heading || 0;
       (data.trail || []).forEach(pt => {
-        // Heading grows counterclockwise (left turns add), so the
-        // screen x flips: a point to the rover's left plots left.
+        // Heading is a compass bearing (clockwise-positive, 0 =
+        // north), the same sense as the radar's clockwise bins,
+        // so a point at relative bearing rel plots at +sin / -cos.
         const rel = (pt[0] - heading) * Math.PI / 180;
         const d = Math.min(pt[1], RADAR_MAX_M);
         const r = R * d / RADAR_MAX_M;
-        const x = cx - r * Math.sin(rel);
+        const x = cx + r * Math.sin(rel);
         const y = cy - r * Math.cos(rel);
         const alpha = Math.max(0.15, 1 - pt[2] / 8);
         rctx.fillStyle = 'rgba(252,211,77,' + alpha.toFixed(2) + ')';
         rctx.beginPath();
-        rctx.arc(x, y, 3, 0, 2 * Math.PI);
+        rctx.arc(x, y, 4, 0, 2 * Math.PI);
         rctx.fill();
       });
       if (data.dist_m !== null && data.dist_m !== undefined) {
@@ -539,32 +486,93 @@ PAGE = """<!DOCTYPE html>
         const r = R * d / RADAR_MAX_M;
         rctx.fillStyle = '#48bb78';
         rctx.beginPath();
-        rctx.arc(cx, cy - r, 5, 0, 2 * Math.PI);
+        rctx.arc(cx, cy - r, 7, 0, 2 * Math.PI);
         rctx.fill();
         rctx.fillStyle = '#fff';
-        rctx.font = '13px sans-serif';
+        rctx.font = '16px sans-serif';
         rctx.textAlign = 'center';
         rctx.fillText(data.dist_m.toFixed(2) + ' m', cx, cy + 30);
         rctx.textAlign = 'left';
+      } else {
+        // Sensor alive, nothing in range: infinity, no dot.
+        rctx.fillStyle = '#fff';
+        rctx.font = '20px sans-serif';
+        rctx.textAlign = 'center';
+        rctx.fillText('∞', cx, cy + 30);
+        rctx.textAlign = 'left';
       }
+    }
+    if (ld19 && ld19.online && ld19.scan) {
+      // LD19 360-degree scan: cyan dots. Angle 0 = forward (up),
+      // increasing clockwise, so x = cx + r*sin(a), y = cy - r*cos(a).
+      rctx.fillStyle = 'rgba(56,189,248,0.9)';
+      ld19.scan.forEach((d, a) => {
+        if (d === null || d === undefined) return;
+        const dd = Math.min(d, RADAR_MAX_M);
+        const r = R * dd / RADAR_MAX_M;
+        const rad = a * Math.PI / 180;
+        const x = cx + r * Math.sin(rad);
+        const y = cy - r * Math.cos(rad);
+        rctx.beginPath();
+        rctx.arc(x, y, 3, 0, 2 * Math.PI);
+        rctx.fill();
+      });
+      rctx.fillStyle = 'rgba(255,255,255,0.6)';
+      rctx.font = '13px sans-serif';
+      rctx.textAlign = 'center';
+      rctx.fillText('LD19 ' + (ld19.hz || 0).toFixed(1) + ' Hz', cx, cy + 62);
+      rctx.textAlign = 'left';
     }
     rctx.fillStyle = '#4299e1';
     rctx.beginPath();
-    rctx.moveTo(cx, cy - 10);
-    rctx.lineTo(cx - 7, cy + 8);
-    rctx.lineTo(cx + 7, cy + 8);
+    rctx.moveTo(cx, cy - 15);
+    rctx.lineTo(cx - 10, cy + 12);
+    rctx.lineTo(cx + 10, cy + 12);
     rctx.closePath();
     rctx.fill();
   }
   function refreshRadar() {
     if (!radarOn) return;
-    fetch('/lidar')
-      .then(r => r.json())
-      .then(drawRadar)
-      .catch(() => drawRadar(null));
+    Promise.all([
+      fetch('/lidar').then(r => r.json()).catch(() => null),
+      fetch('/ld19').then(r => r.json()).catch(() => null)
+    ]).then(([lidar, ld19]) => drawRadar(lidar, ld19));
   }
   setInterval(refreshRadar, 250);
   refreshRadar();
+
+  // Map: floor plan built from the LD19. The panel sits over the
+  // video (the D-pad stays visible, so you can drive while the map
+  // is open). It refreshes once a second while open; mapping keeps
+  // running in the background when it is closed.
+  const mappanel = document.getElementById('mappanel');
+  const mapimg = document.getElementById('mapimg');
+  const mapstats = document.getElementById('mapstats');
+  const maptoggle = document.getElementById('maptoggle');
+  let mapOn = false;
+  let mapTimer = null;
+  function refreshMap() {
+    mapimg.src = '/map.png?t=' + Date.now();
+    fetch('/map.json').then(r => r.json()).then(s => {
+      mapstats.textContent = 'x ' + s.x + ' m, y ' + s.y + ' m, heading ' +
+        s.heading + '° — ' + s.scans + ' scans, ' + s.occupied +
+        ' wall cells, ' + s.free + ' free cells';
+    }).catch(() => { mapstats.textContent = 'map stats unavailable'; });
+  }
+  function setMap(on) {
+    mapOn = on;
+    maptoggle.textContent = '\U0001F5FA Map: ' + (on ? 'On' : 'Off');
+    maptoggle.classList.toggle('on', on);
+    mappanel.style.display = on ? 'block' : 'none';
+    if (on) { refreshMap(); mapTimer = setInterval(refreshMap, 1000); }
+    else if (mapTimer) { clearInterval(mapTimer); mapTimer = null; }
+  }
+  maptoggle.addEventListener('click', () => setMap(!mapOn));
+  document.getElementById('mapclose').addEventListener('click', () => setMap(false));
+  document.getElementById('mapclear').addEventListener('click', () => {
+    fetch('/map/clear', {method: 'POST'}).then(r => r.text())
+      .then(t => { status.textContent = t; refreshMap(); });
+  });
 </script>
 </body></html>
 """
@@ -600,14 +608,24 @@ def apply_command(cmd, speed_pct):
         STATE["speed"] = s
         if cmd == "forward":  # reversed Nov 8: rover drove backward
             set_motors(-s, -s)
+            STATE["throttle_l"] = -s
+            STATE["throttle_r"] = -s
         elif cmd == "back":
             set_motors(s, s)
+            STATE["throttle_l"] = s
+            STATE["throttle_r"] = s
         elif cmd == "left":      # spin in place: left wheels back,
             set_motors(s, -s)    # right wheels forward = turn left
+            STATE["throttle_l"] = s
+            STATE["throttle_r"] = -s
         elif cmd == "right":     # spin in place: left wheels forward,
             set_motors(-s, s)    # right wheels back = turn right
+            STATE["throttle_l"] = -s
+            STATE["throttle_r"] = s
         elif cmd == "stop":
             stop_all()
+            STATE["throttle_l"] = 0.0
+            STATE["throttle_r"] = 0.0
         else:
             return False
         STATE["moving"] = cmd != "stop"
@@ -621,6 +639,8 @@ def apply_drive(left, right):
     right = max(-1.0, min(1.0, right))
     with LOCK:
         STATE["last_cmd_time"] = time.time()
+        STATE["throttle_l"] = left
+        STATE["throttle_r"] = right
         if left == 0 and right == 0:
             stop_all()
             STATE["moving"] = False
@@ -674,10 +694,11 @@ def encode_jpeg(frame_bgr):
 
 
 def annotate_frame(frame):
-    """Draw the green center target box (and the last detected line
-    position as a red dot) onto a copy of the frame for the video stream.
-    The box only shows while line following is on. Detection itself
-    always uses the raw frame."""
+    """Draw overlays onto a copy of the frame for the video stream:
+    the green center target box (only while line following is on),
+    the last detected line position as a red dot, and the cyan
+    LiDAR beam marker at the center with the live distance.
+    Detection itself always uses the raw frame."""
     if not CV2_OK:
         return frame
     h, w = frame.shape[:2]
@@ -688,15 +709,29 @@ def annotate_frame(frame):
         x0 = int(w * (0.5 - CENTER_BOX_HALF))
         x1 = int(w * (0.5 + CENTER_BOX_HALF))
         cv2.rectangle(disp, (x0, y0), (x1, y1), (0, 255, 0), 3)
-    if AVOID["active"]:
-        # Look-ahead zone used by obstacle avoid (yellow, full width,
-        # bottom third of the frame).
-        ax0, ax1 = 0, w
-        ay0, ay1 = int(h * 0.67), h
-        cv2.rectangle(disp, (ax0, ay0), (ax1, ay1), (0, 255, 255), 3)
     if LAST_DETECT["found"]:
         cx = int(w / 2 + LAST_DETECT["offset"] * (w / 2))
         cv2.circle(disp, (cx, (y0 + y1) // 2), 10, (0, 0, 255), -1)
+    # LiDAR beam marker: the sensor looks straight ahead, so the
+    # beam lands at the center of the picture (roughly — it sits
+    # a little high when the camera tilts down a lot). The label
+    # is the live distance, or "inf" when nothing is in range
+    # (the video text font has no infinity glyph; the radar shows
+    # the real ∞ sign). Nothing drawn while the sensor is offline.
+    reading = lidar_reading()
+    if reading is not None:
+        dist_m, _strength = reading
+        cx, cy = w // 2, h // 2
+        cv2.circle(disp, (cx, cy), 20, (255, 255, 0), 2)
+        cv2.line(disp, (cx - 30, cy), (cx - 20, cy), (255, 255, 0), 2)
+        cv2.line(disp, (cx + 20, cy), (cx + 30, cy), (255, 255, 0), 2)
+        cv2.line(disp, (cx, cy - 30), (cx, cy - 20), (255, 255, 0), 2)
+        cv2.line(disp, (cx, cy + 20), (cx, cy + 30), (255, 255, 0), 2)
+        label = "inf" if dist_m is None else f"{dist_m:.2f} m"
+        cv2.putText(disp, label, (cx - 32, cy + 52),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 0), 4)
+        cv2.putText(disp, label, (cx - 32, cy + 52),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
     return disp
 
 
@@ -923,32 +958,6 @@ def detect_line(frame):
     return True, max(-1.0, min(1.0, offset)), count
 
 
-def floor_obstacle(frame):
-    """Check the path ahead for obstacles by floor-color segmentation.
-    Samples the floor color from the bottom band (closest floor), then
-    checks the look-ahead zone for pixels that don't match the floor.
-    The threshold adapts to the floor's own variation, so patterned
-    floors don't false-trigger as easily. Returns (blocked, frac,
-    left_frac, right_frac): frac is the non-floor share of the whole
-    zone; left/right say which side is clearer for turning."""
-    import numpy as np
-    h, w = frame.shape[:2]
-    band = frame[int(h * 0.88):int(h * 0.98)].astype(np.int16)
-    ref = np.median(band.reshape(-1, 3), axis=0)
-    band_diff = np.abs(band - ref).sum(axis=2)
-    thresh = max(90.0, float(np.percentile(band_diff, 95)) * 1.5)
-    x0, x1 = 0, w  # detection zone spans the full frame width
-    y0, y1 = int(h * 0.67), h  # bottom third of the frame only
-    zone = frame[y0:y1, x0:x1].astype(np.int16)
-    diff = np.abs(zone - ref).sum(axis=2)
-    nonfloor = diff > thresh
-    frac = float(nonfloor.mean())
-    half = nonfloor.shape[1] // 2
-    left_frac = float(nonfloor[:, :half].mean())
-    right_frac = float(nonfloor[:, half:].mean())
-    return frac > AVOID_BLOCK_FRAC, frac, left_frac, right_frac
-
-
 def debug_stats():
     """Snapshot of what the line detector sees, for the /debug page."""
     import numpy as np
@@ -985,9 +994,12 @@ def debug_stats():
         f"lidar: online={LIDAR['online']} dist={LIDAR['dist_m']} "
         f"strength={LIDAR['strength']} frames={LIDAR['frames']} "
         f"bad={LIDAR['bad']} err={LIDAR['error'] or 'none'}",
+        f"ld19: online={LD19['online']} port={LD19['port']} "
+        f"hz={LD19['hz']:.1f} points={LD19['points']} "
+        f"packets={LD19['packets']} bad={LD19['bad']} "
+        f"err={LD19['error'] or 'none'}",
         f"heading: {HEADING['deg']:.0f} deg trail: {len(TRAIL)} pts",
-        f"signs status: {SIGNS_STATE['status']}",
-        f"saved signs: {', '.join(f'{n} → {i}' for n, i in SIGNS.list_signs()) or 'none'}",
+        f"map: {map_stats()}",
     ])
 
 
@@ -1093,22 +1105,18 @@ LIDAR = {"online": False, "dist_m": None, "strength": None,
          "temp_c": None, "updated": 0.0, "frames": 0, "bad": 0,
          "error": ""}
 LIDAR_LOCK = threading.Lock()
-# Heading estimate for the radar trail: degrees, counterclockwise
-# positive (a left turn adds). Dead reckoning from commanded turns
-# only — there is no gyro or encoder, so it drifts. The trail fades
-# in seconds, so a rough heading is good enough for the picture.
+# Heading estimate for the radar trail: degrees, clockwise
+# positive like a compass bearing (0 = north, 90 = east; a right
+# turn adds, a left turn subtracts). The pose thread owns it (dead
+# reckoning from the commanded motor throttles) — there is no gyro
+# or encoder, so it drifts. The trail fades in seconds, so a rough
+# heading is good enough for the picture.
 HEADING = {"deg": 0.0}
 TRAIL = []  # (heading_deg, dist_m, timestamp), pruned to the last 8 s
 TRAIL_MAX_AGE = 8.0
 # Turn rate at 100% power, from the SPIN_180_TIME calibration
 # (180° in SPIN_180_TIME seconds).
 TURN_RATE_DEG_S = 180.0 / SPIN_180_TIME
-
-
-def heading_add(degrees):
-    """Nudge the heading estimate (dead reckoning, drifts)."""
-    with LIDAR_LOCK:
-        HEADING["deg"] = (HEADING["deg"] + degrees) % 360.0
 
 
 def lidar_extract(buf):
@@ -1172,16 +1180,24 @@ def lidar_loop():
                     buf += chunk
                     for dist_m, strength, temp_c in lidar_extract(buf):
                         now = time.time()
+                        # A 0.00 m reading with a weak return means
+                        # nothing in range (no obstacle). A 0 with a
+                        # strong return means something too close to
+                        # measure — keep that as a real reading.
+                        # No-obstacle is stored as None so displays
+                        # show infinity instead of a bogus 0.00 m.
+                        no_obstacle = (dist_m == 0.0 and strength < 100)
                         with LIDAR_LOCK:
                             LIDAR["online"] = True
-                            LIDAR["dist_m"] = dist_m
+                            LIDAR["dist_m"] = None if no_obstacle else dist_m
                             LIDAR["strength"] = strength
                             LIDAR["temp_c"] = temp_c
                             LIDAR["updated"] = now
                             LIDAR["frames"] += 1
                             if now - last_sample >= 0.2:
                                 last_sample = now
-                                TRAIL.append((HEADING["deg"], dist_m, now))
+                                if not no_obstacle:
+                                    TRAIL.append((HEADING["deg"], dist_m, now))
                                 cutoff = now - TRAIL_MAX_AGE
                                 while TRAIL and TRAIL[0][2] < cutoff:
                                     TRAIL.pop(0)
@@ -1201,7 +1217,9 @@ def lidar_loop():
 
 def lidar_reading():
     """Latest LiDAR reading as (dist_m, strength), or None if the
-    sensor is offline or the reading is stale (>1 s old)."""
+    sensor is offline or the reading is stale (>1 s old). dist_m is
+    None when the sensor is alive but sees no obstacle in range
+    (display as infinity, and treat as clear)."""
     with LIDAR_LOCK:
         if not LIDAR["online"]:
             return None
@@ -1210,23 +1228,334 @@ def lidar_reading():
         return LIDAR["dist_m"], LIDAR["strength"]
 
 
-AVOID = {"active": False, "cam": False, "last_ping": 0.0,
-         "status": "avoid off"}
+# ------------------------------------------------------------------ LD19
+# LD19 spinning LiDAR (youyeetoo FHL-LD19 kit, 12 m) — the mapping
+# sensor. It streams 47-byte packets at 230400 baud, ~10 Hz spin,
+# 360-degree scan, one-way (nothing to send it). This thread keeps
+# the latest distance per degree in LD19["bins"] (a live 360-degree
+# picture, refreshed ~10x a second) and the /ld19 endpoint serves it
+# to the drive page, which draws the scan as cyan dots on the radar.
+# Obstacle avoid uses both LiDARs: the LD19's forward arc watches
+# the surroundings in front (see ld19_forward_min) and the TF-Luna
+# watches the low front — if either reports an obstacle under the
+# minimum distance, the rover stops and turns left.
+# The reader auto-detects its port by data signature (0x54 header +
+# CRC8), skipping the TF-Luna's port, so the two adapters are told
+# apart by what they send, not by name. If the LD19 is unplugged or
+# pyserial is missing, this just reports offline — the server, the
+# TF-Luna avoid, and the camera keep working.
+# Angle: left-handed, sensor front = 0 deg, increasing clockwise.
+# LD19_ANGLE_OFFSET rotates the scan if the sensor's 0 deg does not
+# point at the rover's front once mounted — calibrate by pointing
+# the rover at a wall and checking the front sector reads it.
+# Calibrated Nov 23, 2026: the sensor's 0 deg points at the rover's
+# left, so with no offset the rover's right side showed at the front
+# (top) of the radar. -90 deg was tried first and rotated it the wrong
+# way (front ended up at the back, right on the left). +90 deg is the
+# correct rotation: front reads at the top, right on the right.
+LD19_BAUD = 230400
+LD19_MAX_M = 12.0
+LD19_ANGLE_OFFSET = 90.0
+LD19_AVOID_HALF_ANGLE = 30  # avoid watches the LD19's forward arc,
+# +/-30 deg around bin 0 (rover front) — wide enough to catch an
+# obstacle the narrow TF-Luna beam threads past, narrow enough not
+# to treat a side wall as a head-on block.
+LD19 = {"online": False, "port": None, "hz": 0.0, "points": 0,
+        "packets": 0, "bad": 0, "updated": 0.0, "error": "",
+        "bins": [None] * 360}  # whole degree -> latest dist (m) or None
+LD19_LOCK = threading.Lock()
+
+
+def _ld19_crc_table():
+    """CRC-8, poly 0x4D, init 0x00, MSB-first (LDROBOT LD19 manual)."""
+    table = []
+    for i in range(256):
+        crc = i
+        for _ in range(8):
+            crc = ((crc << 1) ^ 0x4D) & 0xFF if crc & 0x80 else (crc << 1) & 0xFF
+        table.append(crc)
+    return table
+
+
+_LD19_CRC_TABLE = _ld19_crc_table()
+
+
+def ld19_crc8(data):
+    crc = 0
+    for b in data:
+        crc = _LD19_CRC_TABLE[(crc ^ b) & 0xFF]
+    return crc
+
+
+def ld19_extract(buf):
+    """Pull complete LD19 packets out of buf (a bytearray).
+    Returns a list of (points, speed_dps); points = [(angle_deg,
+    dist_m, intensity)]. Drops garbage and bad-CRC packets; a
+    partial trailing packet stays in buf for the next read."""
+    out = []
+    while True:
+        i = buf.find(b"\x54")
+        if i < 0:
+            del buf[:]
+            break
+        if len(buf) - i < 47:
+            del buf[:i]
+            break
+        pkt = bytes(buf[i:i + 47])
+        del buf[:i + 47]
+        if pkt[1] != 0x2C:
+            with LD19_LOCK:
+                LD19["bad"] += 1
+            continue
+        if ld19_crc8(pkt[:-1]) != pkt[-1]:
+            with LD19_LOCK:
+                LD19["bad"] += 1
+            continue
+        speed = pkt[2] | (pkt[3] << 8)  # deg/s
+        start = (pkt[4] | (pkt[5] << 8)) / 100.0
+        end = (pkt[42] | (pkt[43] << 8)) / 100.0
+        if end < start:
+            end += 360.0
+        step = (end - start) / 11.0
+        pts = []
+        for k in range(12):
+            off = 6 + k * 3
+            dist_mm = pkt[off] | (pkt[off + 1] << 8)
+            inten = pkt[off + 2]
+            ang = (start + step * k) % 360.0
+            pts.append((ang, dist_mm / 1000.0, inten))
+        out.append((pts, speed))
+    return out
+
+
+def ld19_find_port():
+    """Find the LD19's serial port by its data signature. Opens each
+    /dev/ttyUSB* port except the TF-Luna's at 230400 baud and looks
+    for valid LD19 packets (0x54 header + CRC). Returns the port, or
+    None if no LD19 stream is found."""
+    import glob
+    try:
+        import serial
+    except ImportError:
+        return None
+    for port in sorted(glob.glob("/dev/ttyUSB*")):
+        if port == LIDAR_PORT:
+            continue  # the TF-Luna lives here — never steal its port
+        try:
+            ser = serial.Serial(port, LD19_BAUD, timeout=0.2)
+        except Exception:
+            continue
+        try:
+            buf = bytearray()
+            good = 0
+            t_end = time.time() + 1.5
+            while time.time() < t_end and good < 3:
+                chunk = ser.read(4096)
+                if chunk:
+                    buf.extend(chunk)
+                    good += len(ld19_extract(buf))
+                    if good >= 3:
+                        break
+            if good >= 3:
+                return port
+        except Exception:
+            pass
+        finally:
+            try:
+                ser.close()
+            except Exception:
+                pass
+    return None
+
+
+def ld19_loop():
+    """Read the LD19 forever, updating LD19["bins"]. Never raises:
+    a missing adapter or bad port just means offline."""
+    try:
+        import serial
+    except ImportError:
+        with LD19_LOCK:
+            LD19["error"] = ("pyserial not installed "
+                             "(sudo apt install python3-serial)")
+        return
+    buf = bytearray()
+    while True:
+        port = ld19_find_port()
+        if port is None:
+            with LD19_LOCK:
+                LD19["online"] = False
+                LD19["error"] = "no LD19 on any /dev/ttyUSB* port"
+            time.sleep(5.0)
+            continue
+        with LD19_LOCK:
+            LD19["port"] = port
+            LD19["error"] = ""
+        try:
+            ser = serial.Serial(port, LD19_BAUD, timeout=0.2)
+        except Exception as e:
+            with LD19_LOCK:
+                LD19["online"] = False
+                LD19["error"] = f"cannot open {port}: {e}"
+            time.sleep(5.0)
+            continue
+        try:
+            while True:
+                chunk = ser.read(ser.in_waiting or 1)
+                if chunk:
+                    buf += chunk
+                    for pts, speed in ld19_extract(buf):
+                        now = time.time()
+                        with LD19_LOCK:
+                            LD19["online"] = True
+                            LD19["updated"] = now
+                            LD19["packets"] += 1
+                            hz = speed / 360.0
+                            LD19["hz"] = (hz if LD19["hz"] == 0.0
+                                          else 0.8 * LD19["hz"] + 0.2 * hz)
+                            for ang, dist_m, _inten in pts:
+                                idx = int((ang + LD19_ANGLE_OFFSET) % 360.0)
+                                old = LD19["bins"][idx]
+                                if 0.0 < dist_m <= LD19_MAX_M:
+                                    LD19["bins"][idx] = dist_m
+                                    if old is None:
+                                        LD19["points"] += 1
+                                elif dist_m == 0.0:
+                                    # No return in this direction:
+                                    # clear the bin so the radar
+                                    # doesn't show a stale point.
+                                    LD19["bins"][idx] = None
+                                    if old is not None:
+                                        LD19["points"] -= 1
+                else:
+                    time.sleep(0.01)
+        except Exception as e:
+            with LD19_LOCK:
+                LD19["online"] = False
+                LD19["error"] = f"read error: {e}"
+            try:
+                ser.close()
+            except Exception:
+                pass
+            buf.clear()
+            time.sleep(2.0)
+
+
+def ld19_forward_min():
+    """Closest LD19 return in the forward arc, as (dist_m, angle_deg),
+    or None if the LD19 is offline or stale (>1 s). Returns
+    (inf, None) when it is alive but sees nothing in the arc (clear).
+    angle_deg is signed: negative = obstacle on the rover's left,
+    positive = on the right (bin 0 = front, clockwise positive)."""
+    with LD19_LOCK:
+        if not LD19["online"]:
+            return None
+        if time.time() - LD19["updated"] > 1.0:
+            return None
+        bins = list(LD19["bins"])
+    best = None
+    best_ang = None
+    for a in range(-LD19_AVOID_HALF_ANGLE, LD19_AVOID_HALF_ANGLE + 1):
+        d = bins[a % 360]
+        if d is None:
+            continue
+        if best is None or d < best:
+            best = d
+            best_ang = a
+    if best is None:
+        return (float("inf"), None)
+    return (best, best_ang)
+
+
+ESCAPE_MARGIN_M = 0.2  # an escape arc must be clear past
+# stop_m + this, so the rover has room to drive forward after it
+# turns instead of getting blocked again at once.
+
+def ld19_escape_direction(stop_m):
+    """Minimum-angle escape from the full 360-degree LD19 scan.
+    Finds the nearest direction the rover can face such that its
+    forward arc (±LD19_AVOID_HALF_ANGLE) is clear past
+    stop_m + ESCAPE_MARGIN_M. Returns ("left", angle_deg) or
+    ("right", angle_deg) — the smaller turn that gets the front
+    pointing at open space — or None if the LD19 is offline/stale
+    or no direction is clear. Bins are clockwise from the front,
+    so a target at bin b needs a right turn of b degrees (b <= 180)
+    or a left turn of 360 - b (b > 180). The search starts at 1
+    degree (never 0) so a TF-Luna-only block still turns away from
+    the low obstacle instead of reporting 'already clear'."""
+    with LD19_LOCK:
+        if not LD19["online"]:
+            return None
+        if time.time() - LD19["updated"] > 1.0:
+            return None
+        bins = list(LD19["bins"])
+    clear_m = stop_m + ESCAPE_MARGIN_M
+    half = LD19_AVOID_HALF_ANGLE
+
+    def arc_clear(center):
+        """True if every bin in ±half around center is clear (no
+        return, or farther than clear_m)."""
+        for a in range(center - half, center + half + 1):
+            d = bins[a % 360]
+            if d is not None and d <= clear_m:
+                return False
+        return True
+
+    # Search outward from the front; at each turn angle check the
+    # right side (bin t) and the left side (bin 360 - t). Return
+    # the first clear direction. On a tie (both sides clear at the
+    # same angle) prefer the side whose arc has the larger minimum
+    # distance — the more open side.
+    for t in range(1, 181):
+        right_ok = arc_clear(t)
+        left_ok = arc_clear(360 - t)
+        if right_ok and left_ok:
+            def arc_min(center):
+                ds = [bins[a % 360]
+                      for a in range(center - half, center + half + 1)]
+                ds = [d for d in ds if d is not None]
+                return min(ds) if ds else float("inf")
+            if arc_min(t) >= arc_min(360 - t):
+                return ("right", t)
+            return ("left", t)
+        if right_ok:
+            return ("right", t)
+        if left_ok:
+            return ("left", t)
+    return None
+
+
+AVOID = {"active": False, "last_ping": 0.0, "status": "avoid off"}
 AVOID_LOCK = threading.Lock()
 # Obstacle-avoid settings. The rover drives continuously at full
 # power (low power can't move the loaded rover) — no stopping to
-# scan; each loop checks the latest frame and either drives forward
-# or spins toward the clearer side. Escape moves are COMMITTED: once
-# it starts turning one way it keeps turning that way (up to a full
-# turn) instead of flip-flopping; if turning doesn't clear the path
-# it backs up for a second to get space, then tries turning again.
-AVOID_BLOCK_FRAC = 0.05   # non-floor share of the zone that = blocked (sensitive: anything contrasting in the bottom third triggers a turn or back-up)
-LIDAR_STOP_M = 0.5     # LiDAR: something closer than this = blocked, turn
-LIDAR_CLOSE_M = 0.25   # LiDAR: closer than this = too close to turn, back up
-AVOID_HEAVY_FRAC = 0.50   # non-floor share of the zone that = "a lot of obstacles" — still this blocked after turning means back up instead
-AVOID_TURN_MIN = 0.5      # seconds of turning before the heavy check applies (enough to see a new direction)
-AVOID_TURN_COMMIT = 3.0   # seconds to keep turning one way (~full turn)
-AVOID_BACKUP_TIME = 1.0   # seconds to reverse when turning isn't working
+# scan; each loop reads the forward distance from both LiDARs (the
+# LD19's forward arc watches the surroundings, the TF-Luna watches
+# the low front) and either drives forward or turns in place until
+# the front opens up. It never backs up, and the turn side is the
+# minimum-angle escape from the full LD19 sweep (left or right,
+# whichever is the smaller turn) — left only as a fallback when
+# the LD19 has no answer.
+LIDAR_STOP_M = 0.5     # default minimum avoidance distance (m)
+# The minimum avoidance distance is pickable on the drive page
+# (0.30–2.00 m); the picked value lives here and resets to the
+# default when the server restarts.
+MINDIST_MIN_M = 0.3
+MINDIST_MAX_M = 2.0
+MINDIST = {"m": LIDAR_STOP_M}
+MINDIST_LOCK = threading.Lock()
+
+
+def get_mindist():
+    with MINDIST_LOCK:
+        return MINDIST["m"]
+
+
+def set_mindist(m):
+    """Clamp a picked minimum avoidance distance and store it."""
+    m = max(MINDIST_MIN_M, min(MINDIST_MAX_M, float(m)))
+    with MINDIST_LOCK:
+        MINDIST["m"] = m
+    return m
 AVOID_STUCK_TIME = 10.0   # seconds blocked in a row = stuck
 
 
@@ -1236,41 +1565,37 @@ def avoid_set_status(text):
 
 
 def avoid_stop(reason):
-    """Stop avoid mode (and the motors) and give the camera back."""
+    """Stop avoid mode (and the motors)."""
     with AVOID_LOCK:
         was_active = AVOID["active"]
         AVOID["active"] = False
         AVOID["status"] = reason
-        cam = AVOID["cam"]
-        AVOID["cam"] = False
     apply_drive(0, 0)
-    if cam:
-        CAM.release()
     print(f"avoid: {reason}", flush=True)
     return was_active
 
 
 def avoid_loop():
-    """Obstacle-avoid control loop, rebuilt on the TF-Luna LiDAR.
-    Each cycle (~10 Hz) it reads the distance straight ahead: clear
-    (>= LIDAR_STOP_M) -> keep driving forward; blocked -> spin in
-    place toward the clearer side (the camera's floor check picks
-    the side). Too close (< LIDAR_CLOSE_M) -> back up for space
-    instead of turning. If the LiDAR is offline or stale, the loop
-    falls back to the old camera-only floor-color logic, so the
-    mode still works with the sensor unplugged. Escape moves are
-    COMMITTED, never flip-flopped: once it starts turning one way
-    it keeps turning that way (up to a full turn); if that doesn't
-    clear the path it backs up for a second to get space, then
-    tries turning again. It never drives straight back into the
-    same obstacle — a back-up always runs to completion and is
-    followed by a turn, not by driving forward. If the path stays
-    blocked for AVOID_STUCK_TIME straight, it stops and reports
-    stuck. Runs while AVOID['active'] and the page heartbeat is alive."""
+    """Obstacle-avoid control loop. Each cycle (~10 Hz) it reads the
+    forward distance from both LiDARs: the LD19's forward arc
+    watches the surroundings in front, and the TF-Luna watches the
+    low front (its beam sits a few cm up). If EITHER sensor reports
+    an obstacle under the picked minimum distance, the rover stops
+    and turns in place until the front opens up. It never backs
+    up: the LD19 sees 360 degrees, so spinning finds the opening.
+    The turn direction is the minimum-angle escape: when the rover
+    first gets blocked it scans the full 360-degree LD19 sweep for
+    the nearest clear direction and turns that way (left or right,
+    whichever is the smaller turn), so it gets out of a corner
+    instead of circling it. If the LD19 is offline it falls back
+    to turning left. If the path stays blocked for
+    AVOID_STUCK_TIME straight (no opening after several full
+    spins), it stops and reports stuck. If both LiDARs are offline
+    or stale, it stops and waits — it never drives blind. Runs
+    while AVOID['active'] and the page heartbeat is alive."""
     blocked_since = None
-    escape_side = None
-    escape_since = None
-    backup_until = 0.0
+    escape_dir = "left"  # turn side for the current block, picked
+    escape_angle = 0  # from the LD19 when the block starts
     while True:
         with AVOID_LOCK:
             active = AVOID["active"]
@@ -1283,406 +1608,386 @@ def avoid_loop():
             time.sleep(0.1)
             continue
         now = time.time()
-        # A back-up in progress runs to completion — don't let a
-        # clearing frame cut it short and drive back into the obstacle.
-        if now < backup_until:
-            apply_drive(1.0, 1.0)  # reverse
-            avoid_set_status("backing up")
+        # --- sense: LD19 watches the surroundings in front (its
+        # forward arc), TF-Luna watches the low front. If EITHER
+        # reports an obstacle under the minimum distance, the rover
+        # stops and turns. A sensor that is offline or stale just
+        # doesn't contribute; only when NEITHER sensor has data do
+        # we stop and wait — never drive blind. A fresh reading with
+        # no obstacle in range means clear: drive on.
+        ld = ld19_forward_min()
+        tf = lidar_reading()
+        if ld is None and tf is None:
+            apply_drive(0, 0)
+            avoid_set_status("both lidars offline — stopped")
             time.sleep(0.1)
             continue
-        # --- sense: LiDAR first, camera as fallback + turn direction
-        reading = lidar_reading()
-        dist_m = None
-        use_lidar = False
-        if reading is not None:
-            d, strength = reading
-            # Rated range 0.2-8 m; strength 0 or 65535 = bad reading.
-            if 0.2 <= d <= 8.0 and 0 < strength < 65535:
-                dist_m = d
-                use_lidar = True
-        frame = CAM.get_frame()
-        cam_blocked, frac, left_frac, right_frac = False, 0.0, 0.0, 0.0
-        if frame is not None:
-            cam_blocked, frac, left_frac, right_frac = floor_obstacle(frame)
-        if frame is None and not use_lidar:
-            # No sensor at all yet — wait, don't drive blind.
-            time.sleep(0.05)
+        stop_m = get_mindist()
+        # LD19 forward arc.
+        ld_m = None
+        if ld is not None and ld[0] != float("inf"):
+            ld_m = ld[0]
+        # TF-Luna low front beam (validate the same way as before).
+        # A bad reading is ignored if the LD19 has data; it only
+        # stops the rover when the LD19 has no data either.
+        tf_m = None
+        tf_bad = False
+        if tf is not None:
+            tf_m, tf_strength = tf
+            if tf_m is not None and not (
+                    0.0 <= tf_m <= 8.0 and 0 < tf_strength < 65535):
+                tf_bad = True
+                tf_m = None
+        if tf_bad and ld is None:
+            apply_drive(0, 0)
+            avoid_set_status("lidar bad reading — stopped")
+            time.sleep(0.1)
             continue
-        if use_lidar:
-            blocked = dist_m < LIDAR_STOP_M
-            very_close = dist_m < LIDAR_CLOSE_M
-            sensor = f"lidar {dist_m:.2f}m"
+        # Closest reading from either sensor wins; a sensor that is
+        # alive but sees nothing contributes nothing (clear).
+        cands = []
+        if ld_m is not None:
+            cands.append((ld_m, f"ld19 {ld_m:.2f}m"))
+        if tf_m is not None:
+            cands.append((tf_m, f"tf {tf_m:.2f}m"))
+        if not cands:
+            dist_m = None
+            blocked = False
+            sensor = "∞"
         else:
-            blocked = cam_blocked
-            very_close = False
-            sensor = "camera (lidar offline)"
+            dist_m = min(d for d, _ in cands)
+            sensor = " · ".join(lbl for _, lbl in cands)
+            blocked = dist_m < stop_m
         if not blocked:
             blocked_since = None
-            escape_side = None
-            escape_since = None
+            escape_dir = "left"
+            escape_angle = 0
             avoid_set_status(f"{sensor} — driving")
             apply_drive(-1.0, -1.0)
         else:
             if blocked_since is None:
                 blocked_since = now
+                # Pick the escape side once per block: the smallest
+                # turn (left or right) that points the front at
+                # open space, from the full LD19 sweep. Falls back
+                # to left if the LD19 has no answer.
+                esc = ld19_escape_direction(stop_m)
+                if esc is not None:
+                    escape_dir, escape_angle = esc
+                else:
+                    escape_dir, escape_angle = "left", 0
             if now - blocked_since > AVOID_STUCK_TIME:
                 avoid_stop("stuck — blocked on all sides")
                 continue
-            if very_close:
-                # Too close to spin safely: back up for space.
-                backup_until = now + AVOID_BACKUP_TIME
-                escape_side = None
-                escape_since = None
-                apply_drive(1.0, 1.0)
-                avoid_set_status(f"{sensor} — too close, backing up")
-                time.sleep(0.1)
-                continue
-            if escape_side is None:
-                # Commit to the clearer side; don't re-pick every frame.
-                escape_side = "left" if left_frac <= right_frac else "right"
-                escape_since = now
-            elif use_lidar and dist_m < LIDAR_CLOSE_M \
-                    and now - escape_since > AVOID_TURN_MIN:
-                # Turned a bit and still very close: back up for
-                # space instead of keep turning into it.
-                backup_until = now + AVOID_BACKUP_TIME
-                escape_side = None
-                escape_since = None
-                apply_drive(1.0, 1.0)
-                avoid_set_status(f"{sensor} — still close, backing up")
-                time.sleep(0.1)
-                continue
-            elif not use_lidar and frac > AVOID_HEAVY_FRAC \
-                    and now - escape_since > AVOID_TURN_MIN:
-                # Camera fallback: turned a bit and the bottom third
-                # is still mostly blocked: back up for space.
-                backup_until = now + AVOID_BACKUP_TIME
-                escape_side = None
-                escape_since = None
-                apply_drive(1.0, 1.0)
-                avoid_set_status("still blocked — backing up")
-                time.sleep(0.1)
-                continue
-            elif now - escape_since > AVOID_TURN_COMMIT:
-                # A full turn this way didn't clear the path: back up
-                # for a second to get space, then try turning again.
-                backup_until = now + AVOID_BACKUP_TIME
-                escape_side = None
-                escape_since = None
-                apply_drive(1.0, 1.0)
-                avoid_set_status("backing up")
-                time.sleep(0.1)
-                continue
-            avoid_set_status(f"{sensor} — turning {escape_side}")
-            apply_command(escape_side, 100)
-            # Dead-reckoned heading for the radar trail: this cycle
-            # spins ~0.1 s at 100% power.
-            heading_add(TURN_RATE_DEG_S * 0.1 if escape_side == "left"
-                        else -TURN_RATE_DEG_S * 0.1)
+            avoid_set_status(
+                f"{sensor} — turning {escape_dir} {escape_angle}°")
+            apply_command(escape_dir, 100)  # pose thread credits it
         time.sleep(0.1)
 
 
+# --- Pose (dead reckoning) + occupancy-grid map -------------------------
+# The map is a floor plan built from the LD19's 360-degree scans.
+# The rover has no wheel encoders or gyro, so its pose (x, y,
+# heading) starts as dead reckoning from the commanded motor
+# throttles — but every scan is then matched against the map so
+# far (scan_match), which corrects the pose, so the forward-speed
+# guess and the dead-reckoned position don't matter: the LiDAR
+# data pins the pose. The map thread reads the latest LD19 scan +
+# pose ~2x a second, corrects the pose, and ray-casts each return
+# into the grid: cells along the ray are free, the hit cell is
+# occupied. The drive page shows it as a Map panel (/map.png).
+FORWARD_SPEED_M_S = 0.3  # m/s at full throttle — CALIBRATE: drive a
+# known straight distance and compare it to the map; if the map
+# shows the rover going farther than it really did, lower this.
+MAP_SIZE_M = 20.0   # the map covers a 20 x 20 m square, centered on
+# the rover's starting spot. Drive beyond the edge and the map just
+# clips (points outside are dropped).
+MAP_CELL_M = 0.05   # 5 cm per cell
+MAP_CELLS = int(MAP_SIZE_M / MAP_CELL_M)  # 400 x 400
+MAP_CENTER = MAP_CELLS // 2  # grid cell of the rover's start (0, 0)
 
-# --- Signs ---------------------------------------------------------------
-# A "sign" is a hand-drawn mark on paper (an arrow, a shape, a symbol)
-# that means an instruction. Recording saves the sign's ORB keypoint
-# fingerprint plus how big it looked in the frame (the keypoint
-# bounding box), in a signs/ folder on the Pi. While "Follow signs"
-# runs, the rover drives forward and watches for recorded signs; when
-# one appears at about the recorded size it runs that sign's
-# instruction. Size is the trigger distance: a sign only fires when
-# it looks about as big as when it was recorded, so the rover acts
-# at the right spot instead of from across the room.
-SIGNS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                         "signs")
-SIGN_MATCH_MIN = 15    # good ORB matches to count as a seen sign (a
-                       # hand-drawn sign has fewer keypoints than a room)
-SIGN_SIZE_MIN = 0.7    # sign must appear at least 70% of recorded size
-SIGN_SIZE_MAX = 1.5    # ...and at most 150% (too big = too close / wrong scale)
-SIGN_COOLDOWN = 5.0    # seconds before the same sign can fire again
-SIGN_DRIVE_SPEED = 0.7   # follow-signs driving speed (70% — 50% won't
-                         # move the loaded rover; full power shakes the
-                         # video; turns stay at 100% because their 90°
-                         # timing was calibrated there)
-SIGN_TURN_TIME = SPIN_180_TIME / 2  # 90° turn, timed like the route turns
-SIGN_STRAIGHT_TIME = 2.0  # seconds of driving for a "go straight" sign
-SIGN_BACK_TIME = 2.0      # seconds of driving for a "back up" sign
-SIGN_INSTRUCTIONS = ("left", "right", "straight", "back", "stop")
-SIGN_INSTRUCTION_LABELS = {
-    "left": "Turn left", "right": "Turn right",
-    "straight": "Go straight", "back": "Back up", "stop": "Stop",
-}
-SIGN_RECOG = {"current": None, "score": 0, "size": 0.0, "checked": 0.0}
+# Pose: metres, metres, degrees (0 = up/north, clockwise positive).
+POSE = {"x": 0.0, "y": 0.0, "heading": 0.0}
+POSE_LOCK = threading.Lock()
+# Grid: 0 = unknown, 1 = free, 2 = occupied (numpy uint8, made lazily).
+MAP = {"grid": None, "scans": 0, "updated": 0.0}
+MAP_LOCK = threading.RLock()  # reentrant: scan_match reads the grid
+# while map_update_once (same thread) writes it.
 
 
-def _sign_name_ok(name):
-    """Sanitize a sign name for use as a filename."""
-    name = (name or "").strip().replace("/", "_").replace("\\", "_")
-    return name[:30] if name else "sign"
-
-
-class SignStore:
-    """Saved signs: ORB descriptors + keypoint positions + the size
-    the sign appeared at when recorded (keypoint bounding box) +
-    the instruction it means. Stored as signs/<name>.npz plus a
-    <name>.jpg thumbnail of the view. No photo leaves the Pi."""
-
-    def __init__(self):
-        self.dir = SIGNS_DIR
-        os.makedirs(self.dir, exist_ok=True)
-        self.orb = cv2.ORB_create(nfeatures=500) if CV2_OK else None
-        self.lock = threading.Lock()
-
-    def _load(self, name):
+def map_ensure_grid():
+    """Create the occupancy grid on first use (numpy). Returns True
+    if the grid exists, False if numpy is missing (map disabled)."""
+    if MAP["grid"] is not None:
+        return True
+    try:
         import numpy as np
-        path = os.path.join(self.dir, name + ".npz")
-        if not os.path.exists(path):
-            return None
-        try:
-            d = np.load(path, allow_pickle=True)
-            return {
-                "des": d["des"],
-                "pts": d["pts"],
-                "instruction": str(d["instruction"]),
-                "bbox": d["bbox"],
-            }
-        except Exception:
-            return None
+    except ImportError:
+        return False
+    MAP["grid"] = np.zeros((MAP_CELLS, MAP_CELLS), dtype=np.uint8)
+    return True
 
-    def save(self, name, frame, instruction):
-        import numpy as np
-        if not CV2_OK or self.orb is None:
-            return False, "OpenCV unavailable — can't record signs"
-        if instruction not in SIGN_INSTRUCTIONS:
-            return False, "unknown instruction"
-        name = _sign_name_ok(name)
-        small = cv2.resize(frame, (640, 360))
-        kp, des = self.orb.detectAndCompute(small, None)
-        if des is None or len(kp) < 10:
-            return False, "not enough detail in this view — move closer or draw bolder"
-        pts = np.array([k.pt for k in kp], dtype=np.float32)
-        w = float(pts[:, 0].max() - pts[:, 0].min())
-        h = float(pts[:, 1].max() - pts[:, 1].min())
-        path = os.path.join(self.dir, name + ".npz")
-        with self.lock:
-            np.savez(path, des=des, pts=pts,
-                     instruction=np.array(instruction),
-                     bbox=np.array([w, h], dtype=np.float32))
-            cv2.imwrite(os.path.join(self.dir, name + ".jpg"), frame)
-        return True, f'saved sign "{name}" → {SIGN_INSTRUCTION_LABELS[instruction]}'
 
-    def list_signs(self):
-        out = []
-        try:
-            names = sorted(f[:-4] for f in os.listdir(self.dir)
-                           if f.endswith(".npz"))
-        except Exception:
-            return out
-        for n in names:
-            s = self._load(n)
-            if s is not None:
-                out.append((n, s["instruction"]))
-        return out
+def pose_loop():
+    """Dead-reckoning pose, ~10 Hz. Reads the last commanded motor
+    throttles and integrates the pose: forward speed from the mean
+    throttle, turn rate from the throttle difference. This is the
+    SOLE owner of the heading — the avoid loop and spin_180 used to
+    credit turns via heading_add, but that double-counted once the
+    pose thread integrated the same turns from the throttles, so
+    those calls are gone. HEADING mirrors POSE for the radar trail
+    and the /lidar endpoint."""
+    last = time.time()
+    while True:
+        time.sleep(0.1)
+        now = time.time()
+        dt = now - last
+        last = now
+        if dt <= 0 or dt > 1.0:
+            continue
+        with LOCK:
+            moving = STATE["moving"]
+            last_cmd = STATE["last_cmd_time"]
+            tl = STATE["throttle_l"]
+            tr = STATE["throttle_r"]
+        if not moving or now - last_cmd > 1.5:
+            continue
+        # Wheel speeds (m/s, positive = forward). Forward is
+        # negative throttle, so flip the sign.
+        v = -FORWARD_SPEED_M_S * (tl + tr) / 2.0
+        # Turn rate (deg/s). Heading is a compass bearing:
+        # clockwise-positive, 0 = north, 90 = east. A left turn
+        # (tl=+1, tr=-1, left wheels back / right wheels forward)
+        # rotates the rover counterclockwise, so it DECREASES the
+        # bearing — hence the minus sign. (This sign was flipped
+        # until Nov 23: the heading grew on left turns, which
+        # mirrored the pose and smeared the map into a blob while
+        # the radar — which doesn't use the pose — still looked
+        # fine.)
+        w_deg = -TURN_RATE_DEG_S * (tl - tr) / 2.0
+        with POSE_LOCK:
+            POSE["heading"] = (POSE["heading"] + w_deg * dt) % 360.0
+            hr = math.radians(POSE["heading"])
+            POSE["x"] += v * math.sin(hr) * dt
+            POSE["y"] += v * math.cos(hr) * dt
+            heading = POSE["heading"]
+        with LIDAR_LOCK:
+            HEADING["deg"] = heading
 
-    def delete(self, name):
-        name = _sign_name_ok(name)
-        removed = False
-        for suffix in (".npz", ".jpg"):
-            p = os.path.join(self.dir, name + suffix)
-            if os.path.exists(p):
-                try:
-                    os.remove(p)
-                    removed = True
-                except Exception:
-                    pass
-        return removed
 
-    def recognize(self, frame):
-        """Best matching sign in this frame, or (None, 0, 0.0, 0.0).
-        Returns (name, good_matches, size_ratio, cx): size_ratio is
-        how big the sign looks now vs when recorded (1.0 = same size);
-        cx is the centroid's horizontal offset (-1..1). A sign only
-        counts when it has enough good matches AND its size is within
-        [SIGN_SIZE_MIN, SIGN_SIZE_MAX] of the recorded size."""
-        import numpy as np
-        if not CV2_OK or self.orb is None:
-            return None, 0, 0.0, 0.0
-        small = cv2.resize(frame, (640, 360))
-        kp, des = self.orb.detectAndCompute(small, None)
-        if des is None or len(kp) < 5:
-            return None, 0, 0.0, 0.0
-        pts = np.array([k.pt for k in kp], dtype=np.float32)
-        bf = cv2.BFMatcher(cv2.NORM_HAMMING, crossCheck=False)
-        try:
-            names = sorted(f[:-4] for f in os.listdir(self.dir)
-                           if f.endswith(".npz"))
-        except Exception:
-            return None, 0, 0.0, 0.0
-        best = (None, 0, 0.0, 0.0)
-        for name in names:
-            s = self._load(name)
-            if s is None or s["des"] is None or len(s["des"]) < 5:
-                continue
-            try:
-                matches = bf.knnMatch(des, s["des"], k=2)
-            except Exception:
-                continue
-            good = []
-            for m in matches:
-                if len(m) == 2 and m[0].distance < 0.75 * m[1].distance:
-                    good.append(m[0])
-            if len(good) < SIGN_MATCH_MIN:
-                continue
-            # Size: compare the spread of the MATCHED keypoints now
-            # vs the same keypoints when recorded (same subset both
-            # sides, so the comparison is fair).
-            cur = pts[[m.queryIdx for m in good]]
-            rec = s["pts"][[m.trainIdx for m in good]]
-            cw = float(cur[:, 0].max() - cur[:, 0].min())
-            ch = float(cur[:, 1].max() - cur[:, 1].min())
-            rw = float(rec[:, 0].max() - rec[:, 0].min())
-            rh = float(rec[:, 1].max() - rec[:, 1].min())
-            if rw < 5 or rh < 5:
-                size_ratio = 1.0  # recorded points too clustered to measure
-            else:
-                size_ratio = ((cw / rw) + (ch / rh)) / 2.0
-            if not (SIGN_SIZE_MIN <= size_ratio <= SIGN_SIZE_MAX):
-                continue
-            score = len(good)
-            if score > best[1]:
-                cx = float(cur[:, 0].mean() / 640.0 * 2 - 1)
-                best = (name, score, size_ratio, cx)
+def scan_match(bins, px, py, ph):
+    """Correct the pose (px, py, ph) by matching the scan (bins) to
+    the map — this is what makes the forward-speed guess and the
+    dead-reckoned position not matter. Uses a coarse-to-fine grid
+    search around the estimate: it scores every candidate pose by
+    how well the scan aligns with the map (+1 per scan point that
+    lands on a mapped wall, -1 per point on mapped free space,
+    0 on unknown) and keeps the best. When the rover is exploring
+    new ground the score is flat and the pose stays at the estimate
+    (nothing to match against yet); when it revisits mapped walls
+    the match pulls the pose back. Returns (cx, cy, ch)."""
+    if not map_ensure_grid():
+        return (px, py, ph)
+    import numpy as np
+    # Scan points in the rover's frame (metres, +y = rover forward,
+    # +x = rover right). Bins with no return are skipped.
+    pts = []
+    for b, dist in enumerate(bins):
+        if dist is None or dist <= 0 or dist > LD19_MAX_M:
+            continue
+        a = math.radians(b)
+        pts.append((dist * math.sin(a), dist * math.cos(a)))
+    if len(pts) < 10:
+        return (px, py, ph)  # too few points to match
+    pts = np.array(pts)  # (N, 2), rover frame
+    grid = MAP["grid"]
+
+    def score(cx, cy, ch):
+        """+1 per point on a mapped wall, -1 per point on mapped
+        free space, 0 on unknown. Higher = better aligned."""
+        hr = math.radians(ch)
+        s, c = math.sin(hr), math.cos(hr)
+        # Rover frame -> world: forward is (sin, cos), right is
+        # (cos, -sin) in (x, y).
+        wx = cx + pts[:, 0] * c + pts[:, 1] * s
+        wy = cy - pts[:, 0] * s + pts[:, 1] * c
+        cols = MAP_CENTER + np.round(wx / MAP_CELL_M).astype(int)
+        rows = MAP_CENTER - np.round(wy / MAP_CELL_M).astype(int)
+        ok = ((cols >= 0) & (cols < MAP_CELLS)
+              & (rows >= 0) & (rows < MAP_CELLS))
+        if not ok.any():
+            return 0.0
+        vals = grid[rows[ok], cols[ok]]
+        return float(((vals == 2).sum() - (vals == 1).sum()))
+
+    with MAP_LOCK:
+        # Coarse-to-fine grid search around the estimate. A random
+        # hill climb gets stuck in local maxima on this spiky
+        # exact-cell score (the true pose scores ~354/360 while a
+        # nearby wrong pose scores ~140), so instead we exhaustively
+        # check a grid of candidates and keep the best — the true
+        # pose is the clear global maximum.
+        def search(cx, cy, ch, dxy, dth):
+            best = (cx, cy, ch)
+            best_s = score(cx, cy, ch)
+            for ddx in (-dxy, -dxy / 2, 0.0, dxy / 2, dxy):
+                for ddy in (-dxy, -dxy / 2, 0.0, dxy / 2, dxy):
+                    for ddt in (-dth, -dth / 2, 0.0, dth / 2, dth):
+                        cand = (cx + ddx, cy + ddy,
+                                (ch + ddt) % 360.0)
+                        s = score(*cand)
+                        if s > best_s:
+                            best_s = s
+                            best = cand
+            return best, best_s
+
+        # Coarse: +-0.3 m, +-12 deg. Fine: +-0.06 m, +-3 deg.
+        best, _ = search(px, py, ph, 0.30, 12.0)
+        best, _ = search(best[0], best[1], best[2], 0.06, 3.0)
         return best
 
 
-SIGNS = SignStore()
-SIGNS_STATE = {"active": False, "last_ping": 0.0,
-               "status": "signs off", "last_sign": None, "last_time": 0.0}
-SIGNS_LOCK = threading.Lock()
-
-
-def sign_set_status(text):
-    with SIGNS_LOCK:
-        SIGNS_STATE["status"] = text
-
-
-def sign_stop(reason):
-    with SIGNS_LOCK:
-        was_active = SIGNS_STATE["active"]
-        SIGNS_STATE["active"] = False
-        SIGNS_STATE["status"] = reason
-    if was_active:
-        stop_all()
-    print(f"signs: stopped ({reason})", flush=True)
-
-
-def sign_start():
-    with SIGNS_LOCK:
-        if SIGNS_STATE["active"]:
-            return False, "already following signs"
-        if not SIGNS.list_signs():
-            return False, "no signs recorded yet — record one first"
-        SIGNS_STATE["active"] = True
-        SIGNS_STATE["last_ping"] = time.time()
-        SIGNS_STATE["status"] = "following signs…"
-        SIGNS_STATE["last_sign"] = None
-        SIGNS_STATE["last_time"] = 0.0
-    return True, "following signs…"
-
-
-def _sign_alive():
-    with SIGNS_LOCK:
-        return (SIGNS_STATE["active"]
-                and time.time() - SIGNS_STATE["last_ping"] <= 3.0)
-
-
-def _sign_timed_drive(left, right, seconds):
-    """Drive at the given throttles for a fixed time (for sign
-    instructions), stopping early if the mode is cancelled."""
-    end = time.time() + seconds
-    while time.time() < end:
-        if not _sign_alive():
-            break
-        apply_drive(left, right)
-        time.sleep(0.05)
-    stop_all()
-
-
-def _sign_timed_spin(side, seconds):
-    """Spin in place for a fixed time (for a turn sign)."""
-    start = time.time()
-    end = start + seconds
-    while time.time() < end:
-        if not _sign_alive():
-            break
-        apply_command(side, 100)
-        time.sleep(0.05)
-    stop_all()
-    # Dead-reckoned heading for the radar trail.
-    heading_add(TURN_RATE_DEG_S * (time.time() - start) if side == "left"
-                else -TURN_RATE_DEG_S * (time.time() - start))
-
-
-def sign_loop():
-    """Follow-signs control loop: drives forward and watches for
-    recorded signs. When a sign appears at about the recorded size,
-    it runs that sign's instruction (turn left/right, go straight,
-    back up, or stop). The same sign can't fire again for
-    SIGN_COOLDOWN seconds. If the camera has no frame yet it waits
-    instead of driving blind. Same safety as the other modes: a
-    D-pad press cancels, and it stops if the page loses contact
-    for 3 seconds (the page heartbeats /sign/ping while it runs)."""
-    while True:
-        with SIGNS_LOCK:
-            active = SIGNS_STATE["active"]
-            last_ping = SIGNS_STATE["last_ping"]
-        if not active:
-            time.sleep(0.1)
-            continue
-        if time.time() - last_ping > 3.0:
-            sign_stop("page gone — signs stopped")
-            time.sleep(0.1)
-            continue
-        frame = CAM.get_frame()
-        if frame is None:
-            stop_all()
-            time.sleep(0.1)
-            continue
-        name, score, size_ratio, _cx = SIGNS.recognize(frame)
-        now = time.time()
-        with SIGNS_LOCK:
-            SIGN_RECOG["current"] = name
-            SIGN_RECOG["score"] = score
-            SIGN_RECOG["size"] = size_ratio
-            SIGN_RECOG["checked"] = now
-            last_sign = SIGNS_STATE["last_sign"]
-            last_time = SIGNS_STATE["last_time"]
-        if name is not None and (name != last_sign
-                                 or now - last_time > SIGN_COOLDOWN):
-            with SIGNS_LOCK:
-                SIGNS_STATE["last_sign"] = name
-                SIGNS_STATE["last_time"] = now
-            instr = dict(SIGNS.list_signs()).get(name)
-            label = SIGN_INSTRUCTION_LABELS.get(instr, instr)
-            sign_set_status(f"saw {name} ({score} matches, {size_ratio:.2f}×) — {label}")
-            if instr == "left":
-                _sign_timed_spin("left", SIGN_TURN_TIME)
-            elif instr == "right":
-                _sign_timed_spin("right", SIGN_TURN_TIME)
-            elif instr == "straight":
-                _sign_timed_drive(-SIGN_DRIVE_SPEED, -SIGN_DRIVE_SPEED,
-                                  SIGN_STRAIGHT_TIME)
-            elif instr == "back":
-                _sign_timed_drive(SIGN_DRIVE_SPEED, SIGN_DRIVE_SPEED,
-                                  SIGN_BACK_TIME)
-            elif instr == "stop":
-                sign_stop(f"stopped at {name}")
+def map_update_once(bins, px, py, ph):
+    """One map update from a scan (bins = 360 distances or None)
+    at pose (px, py, ph). Ray-casts each return into the grid:
+    cells along the ray are free (only if still unknown, so a stray
+    clear reading can't erase a wall), the hit cell is occupied.
+    Bins with no return mean clear space to the LD19's 12 m max.
+    Returns (occupied, free) cell counts, or None if the grid is
+    unavailable or the rover is off the map."""
+    if not map_ensure_grid():
+        return None
+    import numpy as np
+    rc = MAP_CENTER + int(round(px / MAP_CELL_M))
+    rr = MAP_CENTER - int(round(py / MAP_CELL_M))
+    if not (0 <= rc < MAP_CELLS and 0 <= rr < MAP_CELLS):
+        return None
+    grid = MAP["grid"]
+    with MAP_LOCK:
+        for b, dist in enumerate(bins):
+            # World angle of this bin (deg, clockwise from up).
+            wa = math.radians((ph + b) % 360.0)
+            dx = math.sin(wa)
+            dy = math.cos(wa)
+            if dist is None:
+                rng = LD19_MAX_M  # no return: clear to max range
+                hit = False
+            else:
+                rng = dist
+                hit = True
+            ex = px + rng * dx
+            ey = py + rng * dy
+            ec = MAP_CENTER + int(round(ex / MAP_CELL_M))
+            er = MAP_CENTER - int(round(ey / MAP_CELL_M))
+            steps = max(abs(ec - rc), abs(er - rr), 1)
+            xs = np.linspace(rc, ec, steps + 1).round().astype(int)
+            ys = np.linspace(rr, er, steps + 1).round().astype(int)
+            ok = ((xs >= 0) & (xs < MAP_CELLS)
+                  & (ys >= 0) & (ys < MAP_CELLS))
+            xs, ys = xs[ok], ys[ok]
+            if len(xs) == 0:
                 continue
-            continue
-        sign_set_status("following signs…"
-                        + (f" last: {last_sign}" if last_sign else ""))
-        apply_drive(-SIGN_DRIVE_SPEED, -SIGN_DRIVE_SPEED)
-        time.sleep(0.1)
+            # Free along the ray (not the hit cell itself, and
+            # never overwrite an occupied cell).
+            if len(xs) > 1:
+                fx, fy = xs[:-1], ys[:-1]
+                free_mask = grid[fy, fx] == 0
+                grid[fy[free_mask], fx[free_mask]] = 1
+            # Occupied at the hit (not the rover's own cell).
+            if hit and (xs[-1] != rc or ys[-1] != rr):
+                grid[ys[-1], xs[-1]] = 2
+        MAP["scans"] += 1
+        MAP["updated"] = time.time()
+        return (int((grid == 2).sum()), int((grid == 1).sum()))
+
+
+def map_update_loop():
+    """Build the occupancy grid from the LD19, ~2 Hz. Each cycle it
+    takes the latest scan + dead-reckoned pose, corrects the pose
+    by scan-matching the scan against the map so far (so the
+    forward-speed guess and the dead-reckoned position don't
+    matter — the LiDAR data pins the pose), writes the corrected
+    pose back to POSE, and feeds the scan to map_update_once at
+    the corrected pose. Points outside the 20 m square are
+    dropped."""
+    while True:
+        time.sleep(0.5)
+        now = time.time()
+        with LD19_LOCK:
+            if not (LD19["online"] and now - LD19["updated"] < 1.0):
+                continue
+            bins = list(LD19["bins"])
+        with POSE_LOCK:
+            px, py, ph = POSE["x"], POSE["y"], POSE["heading"]
+        # Scan-match: correct the dead-reckoned pose against the
+        # map, then write the correction back so the pose thread
+        # keeps integrating from the corrected pose.
+        cx, cy, ch = scan_match(bins, px, py, ph)
+        with POSE_LOCK:
+            POSE["x"], POSE["y"], POSE["heading"] = cx, cy, ch
+        map_update_once(bins, cx, cy, ch)
+
+
+def map_render_png():
+    """Render the occupancy grid + rover to a PNG (bytes), or None
+    if the map/cv2 isn't available. Unknown = dark gray, free =
+    white, occupied = black, rover = green triangle."""
+    if not CV2_OK or not map_ensure_grid():
+        return None
+    import numpy as np
+    with MAP_LOCK:
+        grid = MAP["grid"].copy()
+    with POSE_LOCK:
+        px, py, ph = POSE["x"], POSE["y"], POSE["heading"]
+    img = np.full(grid.shape, 60, dtype=np.uint8)
+    img[grid == 1] = 240
+    img[grid == 2] = 0
+    bgr = cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
+    rc = MAP_CENTER + int(round(px / MAP_CELL_M))
+    rr = MAP_CENTER - int(round(py / MAP_CELL_M))
+    if 0 <= rc < MAP_CELLS and 0 <= rr < MAP_CELLS:
+        hr = math.radians(ph)
+        s, c = math.sin(hr), math.cos(hr)
+        nose = (int(rc + 10 * s), int(rr - 10 * c))
+        b1 = (int(rc - 6 * s + 6 * c), int(rr + 6 * c + 6 * s))
+        b2 = (int(rc - 6 * s - 6 * c), int(rr + 6 * c - 6 * s))
+        cv2.fillPoly(bgr, [np.array([nose, b1, b2])], (0, 200, 0))
+    ok, buf = cv2.imencode(".png", bgr)
+    return buf.tobytes() if ok else None
+
+
+def map_clear():
+    """Reset the grid to unknown and the pose to the start (0, 0,
+    heading 0)."""
+    if map_ensure_grid():
+        with MAP_LOCK:
+            MAP["grid"][:] = 0
+            MAP["scans"] = 0
+            MAP["updated"] = 0.0
+    with POSE_LOCK:
+        POSE["x"] = 0.0
+        POSE["y"] = 0.0
+        POSE["heading"] = 0.0
+    with LIDAR_LOCK:
+        HEADING["deg"] = 0.0
+        TRAIL.clear()
+
+
+def map_stats():
+    """Pose + grid counts, for /map.json and /debug."""
+    if not map_ensure_grid():
+        return None
+    import numpy as np
+    with MAP_LOCK:
+        grid = MAP["grid"]
+        occ = int((grid == 2).sum())
+        free = int((grid == 1).sum())
+        scans = MAP["scans"]
+    with POSE_LOCK:
+        x, y, h = POSE["x"], POSE["y"], POSE["heading"]
+    return {"x": round(x, 2), "y": round(y, 2),
+            "heading": round(h, 1), "occupied": occ, "free": free,
+            "scans": scans, "size_m": MAP_SIZE_M, "cell_m": MAP_CELL_M}
 
 
 def spin_180():
@@ -1704,10 +2009,6 @@ def spin_180():
         avoid_was_on = AVOID["active"]
     if avoid_was_on:
         avoid_stop("spin 180")
-    with SIGNS_LOCK:
-        signs_was_on = SIGNS_STATE["active"]
-    if signs_was_on:
-        sign_stop("spin 180")
     print("spin: 180° turn starting", flush=True)
     apply_command("right", 100)  # spin in place
     start = time.time()
@@ -1723,10 +2024,8 @@ def spin_180():
         time.sleep(0.05)
     if not cancelled:
         apply_command("stop", 100)
-        heading_add(-180.0)  # spun right for a half-turn
-    else:
-        # Partial spin: credit the time actually spent turning.
-        heading_add(-TURN_RATE_DEG_S * (time.time() - start))
+    # (The pose thread credits the turn from the motor throttles,
+    # including a partial spin if this was cancelled.)
     with SPIN_LOCK:
         SPIN["active"] = False
     print(f"spin: 180° turn done{' (cancelled)' if cancelled else ''}",
@@ -1755,33 +2054,6 @@ class Handler(BaseHTTPRequestHandler):
                 return
             self._reply(stats)
             return
-        if self.path.startswith("/signs"):
-            lines = [f"{n} → {i}" for n, i in SIGNS.list_signs()]
-            self._reply("\n".join(lines))
-            return
-        if self.path.startswith("/snapshot"):
-            frame = CAM.get_frame()
-            if frame is None:
-                self._reply("no frame yet — open the drive page first",
-                            code=503)
-                return
-            jpg = encode_jpeg(frame)
-            if jpg is None:
-                self._reply("could not capture a frame", code=503)
-                return
-            self.send_response(200)
-            self.send_header("Content-Type", "image/jpeg")
-            self.send_header("Content-Length", str(len(jpg)))
-            self.end_headers()
-            self.wfile.write(jpg)
-            return
-        if self.path.startswith("/sign/current"):
-            self._reply(SIGN_RECOG["current"] or "")
-            return
-        if self.path.startswith("/sign/active"):
-            with SIGNS_LOCK:
-                self._reply("1" if SIGNS_STATE["active"] else "0")
-            return
         if self.path.startswith("/lidar"):
             now = time.time()
             with LIDAR_LOCK:
@@ -1790,6 +2062,7 @@ class Handler(BaseHTTPRequestHandler):
                               now - LIDAR["updated"] < 1.0,
                     "dist_m": LIDAR["dist_m"],
                     "strength": LIDAR["strength"],
+                    "stop_m": get_mindist(),
                     "error": LIDAR["error"],
                     "heading": HEADING["deg"],
                     "trail": [[h, d, round(now - t, 1)]
@@ -1797,6 +2070,52 @@ class Handler(BaseHTTPRequestHandler):
                               if now - t < TRAIL_MAX_AGE],
                 }
             body = json.dumps(payload).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
+        if self.path.startswith("/ld19"):
+            now = time.time()
+            with LD19_LOCK:
+                online = LD19["online"] and now - LD19["updated"] < 1.0
+                payload = {
+                    "online": online,
+                    "port": LD19["port"],
+                    "hz": round(LD19["hz"], 1),
+                    "points": LD19["points"] if online else 0,
+                    "error": LD19["error"],
+                    # index = whole degree (0 = sensor front, clockwise),
+                    # value = latest distance in metres, or null.
+                    "scan": [None if v is None else round(v, 2)
+                             for v in LD19["bins"]] if online else [],
+                }
+            body = json.dumps(payload).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
+        if self.path.startswith("/map.png"):
+            png = map_render_png()
+            if png is None:
+                self.send_error(503, "map unavailable (cv2/numpy missing?)")
+                return
+            self.send_response(200)
+            self.send_header("Content-Type", "image/png")
+            self.send_header("Content-Length", str(len(png)))
+            self.send_header("Cache-Control", "no-cache")
+            self.end_headers()
+            self.wfile.write(png)
+            return
+        if self.path.startswith("/map.json"):
+            stats = map_stats()
+            if stats is None:
+                self.send_error(503, "map unavailable (numpy missing?)")
+                return
+            body = json.dumps(stats).encode()
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
             self.send_header("Content-Length", str(len(body)))
@@ -1852,6 +2171,10 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def do_POST(self):
+        if self.path.startswith("/map/clear"):
+            map_clear()
+            self._reply("map cleared — pose reset to start")
+            return
         if self.path.startswith("/drive"):
             q = parse_qs(urlparse(self.path).query)
             try:
@@ -1875,10 +2198,6 @@ class Handler(BaseHTTPRequestHandler):
                     avoid_was_on = AVOID["active"]
                 if avoid_was_on:
                     avoid_stop("auto on")
-                with SIGNS_LOCK:
-                    signs_was_on = SIGNS_STATE["active"]
-                if signs_was_on:
-                    sign_stop("auto on")
                 with AUTO_LOCK:
                     if AUTO["active"]:
                         AUTO["last_ping"] = time.time()
@@ -1907,6 +2226,16 @@ class Handler(BaseHTTPRequestHandler):
             else:
                 self.send_error(404)
             return
+        if self.path.startswith("/avoid/mindist"):
+            # ?m=<meters> — pick the minimum avoidance distance.
+            q = parse_qs(urlparse(self.path).query)
+            try:
+                m = float(q.get("m", [""])[0])
+            except ValueError:
+                self._reply("bad distance", code=400)
+                return
+            self._reply(f"min avoid distance {set_mindist(m):.2f} m")
+            return
         if self.path.startswith("/avoid/"):
             action = self.path.split("/")[2].split("?")[0]
             if action == "on":
@@ -1917,10 +2246,6 @@ class Handler(BaseHTTPRequestHandler):
                     auto_was_on = AUTO["active"]
                 if auto_was_on:
                     auto_stop("avoid on")
-                with SIGNS_LOCK:
-                    signs_was_on = SIGNS_STATE["active"]
-                if signs_was_on:
-                    sign_stop("avoid on")
                 with AVOID_LOCK:
                     if AVOID["active"]:
                         AVOID["last_ping"] = time.time()
@@ -1929,12 +2254,6 @@ class Handler(BaseHTTPRequestHandler):
                     AVOID["active"] = True
                     AVOID["last_ping"] = time.time()
                     AVOID["status"] = "scanning…"
-                if not CAM.acquire():
-                    avoid_stop("camera could not start")
-                    self._reply("camera could not start", code=503)
-                    return
-                with AVOID_LOCK:
-                    AVOID["cam"] = True
                 self._reply("obstacle avoid on")
             elif action == "off":
                 avoid_stop("avoid off")
@@ -1944,42 +2263,6 @@ class Handler(BaseHTTPRequestHandler):
                     if AVOID["active"]:
                         AVOID["last_ping"] = time.time()
                     self._reply(AVOID["status"])
-            else:
-                self.send_error(404)
-            return
-        if self.path.startswith("/sign/"):
-            action = self.path.split("/")[2].split("?")[0]
-            q = parse_qs(urlparse(self.path).query)
-            if action == "save":
-                name = _sign_name_ok(q.get("name", [""])[0])
-                instruction = (q.get("instruction", [""])[0] or "").strip()
-                frame = CAM.get_frame()
-                if frame is None:
-                    self._reply("no frame yet — open the drive page first",
-                                code=503)
-                    return
-                ok, msg = SIGNS.save(name, frame, instruction)
-                self._reply(msg, code=200 if ok else 400)
-            elif action == "delete":
-                name = _sign_name_ok(q.get("name", [""])[0])
-                if SIGNS.delete(name):
-                    self._reply(f'deleted sign "{name}"')
-                else:
-                    self._reply(f'no sign named "{name}"', code=404)
-            elif action == "on":
-                if not MOTORS_OK:
-                    self._reply("motors unavailable — check HAT/I2C on the Pi")
-                    return
-                ok, msg = sign_start()
-                self._reply(msg, code=200 if ok else 400)
-            elif action == "off":
-                sign_stop("stopped")
-                self._reply("signs off")
-            elif action == "ping":
-                with SIGNS_LOCK:
-                    if SIGNS_STATE["active"]:
-                        SIGNS_STATE["last_ping"] = time.time()
-                    self._reply(SIGNS_STATE["status"])
             else:
                 self.send_error(404)
             return
@@ -2014,7 +2297,7 @@ class Handler(BaseHTTPRequestHandler):
         # Any manual button press cancels a 180° spin mid-turn.
         with SPIN_LOCK:
             SPIN["cancel"] = True
-        # Any manual button press takes over from auto / avoid / signs
+        # Any manual button press takes over from auto / avoid
         # instantly.
         with AUTO_LOCK:
             auto_was_on = AUTO["active"]
@@ -2024,10 +2307,6 @@ class Handler(BaseHTTPRequestHandler):
             avoid_was_on = AVOID["active"]
         if avoid_was_on:
             avoid_stop("manual override")
-        with SIGNS_LOCK:
-            signs_was_on = SIGNS_STATE["active"]
-        if signs_was_on:
-            sign_stop("manual override")
         # Manual driving invalidates the radar trail's heading
         # estimate — drop it so the picture restarts clean.
         with LIDAR_LOCK:
@@ -2054,9 +2333,11 @@ class Handler(BaseHTTPRequestHandler):
 if __name__ == "__main__":
     threading.Thread(target=watchdog, daemon=True).start()
     threading.Thread(target=lidar_loop, daemon=True).start()
+    threading.Thread(target=ld19_loop, daemon=True).start()
+    threading.Thread(target=pose_loop, daemon=True).start()
+    threading.Thread(target=map_update_loop, daemon=True).start()
     threading.Thread(target=auto_loop, daemon=True).start()
     threading.Thread(target=avoid_loop, daemon=True).start()
-    threading.Thread(target=sign_loop, daemon=True).start()
     server = ThreadingHTTPServer(("0.0.0.0", 8001), Handler)
     print("Rover drive page at http://localhost:8001  (Ctrl+C to stop)",
           flush=True)

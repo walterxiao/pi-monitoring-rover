@@ -193,7 +193,9 @@ You'll get the ArduCam video fullscreen, with a circular D-pad at the
 bottom left: ▲ forward, ▼ reverse, ◀ ▶ spin in place — ◀ is left
 wheels backward + right wheels forward (turn left), ▶ is the reverse
 (turn right). **Hold** a button to move, **let go to stop.** That's
-how a 4WD car turns, there's no steering wheel. The button in the center of the D-pad (↻ 180°) spins
+how a 4WD car turns, there's no steering wheel. On a computer the
+keyboard arrow keys drive the same way: hold an arrow to move, let
+go to stop. The button in the center of the D-pad (↻ 180°) spins
 the rover a half-turn in place — tap it once and it turns around by
 itself. Let go of the D-pad first, then tap it; any D-pad button
 cancels the spin mid-turn. The spin is timed, not measured: if it
@@ -317,41 +319,56 @@ whether the tape is in view at all.
 ## Phase 8 — Obstacle avoid: the rover explores on its own
 
 The rover can wander a room on its own and steer around obstacles —
-no remote control needed while it's running. Since Nov 13 the
-TF-Luna LiDAR is the primary sensor: it measures the real distance
-straight ahead, and the camera is only the fallback and the
-turn-direction picker.
+no remote control needed while it's running. Two LiDARs watch the
+front: the LD19's forward arc (±30°) covers the surroundings, and
+the TF-Luna's low beam (a few cm up) covers the low front. If
+EITHER reports an obstacle, the rover stops and turns. The camera
+plays no part in this mode.
 
 **How it works:** it drives continuously — no stopping to scan — and
-checks the LiDAR distance about 10 times a second. Clear (over
-0.5 m ahead) it keeps driving forward; blocked (under 0.5 m) it
-spins toward the clearer side, using the camera's floor check
-(bottom third of the frame vs the floor color) to pick the side;
-too close (under 0.25 m) it backs up for space instead of turning.
-It commits to a turn direction — it won't flip-flop left/right —
-and if a full turn doesn't clear the path it backs up for a second
-to get space and tries turning again. If it turns a bit and is
-still very close, it backs up instead of keep turning — a wall or
-a wide obstacle field is better escaped backward than spun into.
-If it's blocked on all sides for 10 seconds straight it stops and
-says "stuck". If the LiDAR is offline (adapter unplugged, pyserial
-missing, stale readings) the loop falls back to the old
-camera-only floor-color logic automatically, and the status line
-says `camera (lidar offline)` so you know which sensor is driving.
+checks the forward distance from both LiDARs about 10 times a
+second. Clear (at or beyond the minimum distance, or nothing in
+range) it keeps driving forward; blocked (under the minimum
+distance, from either sensor) it stops and turns in place until
+the front opens up. It never backs up — the LD19 sees 360
+degrees, so spinning finds the opening. **The turn side is the
+minimum-angle escape:** when it first gets blocked it scans the
+full 360-degree LD19 sweep for the nearest clear direction and
+turns that way (left or right, whichever is the smaller turn), so
+it gets out of a corner instead of circling it — turning left
+only as a fallback if the LD19 has no answer. If it's blocked on
+all sides for 10 seconds straight (no opening after several full
+spins) it stops and says "stuck". Only when BOTH LiDARs are
+offline (adapters unplugged, pyserial missing, stale readings)
+does the rover stop and wait — it never drives blind.
 
-**Run it:** on the drive page, tap **🚧 Obstacle Avoid**. The video
-shows a **yellow box** around the bottom third — that's the zone the
-camera checks for the turn direction. The status line tells you what
-it's doing: `lidar 1.24m — driving`, `lidar 0.38m — turning left`,
-`lidar 0.18m — too close, backing up`, or `stuck — blocked on all
-sides`. Tap the button again to stop, or tap any D-pad button —
-manual control takes over instantly. It won't run at the same time
-as Line Follow; turning one on turns the other off.
+**Run it:** on the drive page, tap **🚧 Obstacle Avoid**. The status
+line tells you what it's doing and which sensor saw it:
+`ld19 1.24m — driving`, `tf 0.30m — turning right 86°`,
+`ld19 0.38m · tf 0.30m — turning left 45°`, or
+`stuck — blocked on all sides`. Tap the button again to
+stop, or tap any D-pad button — manual control takes over
+instantly. It won't run at the same time as Line Follow; turning
+one on turns the other off.
 
-**Radar (bird's-eye view):** the top-right **📡 Radar** panel shows
-the rover in the middle with recent LiDAR readings plotted around
-it — the green dot is the live reading straight ahead, yellow dots
-are the last few seconds of readings. Rings are 1 m / 2 m / 3 m.
+**Pick the distance:** the **Min dist** slider under the Obstacle
+Avoid button sets the minimum avoidance distance (0.30–2.00 m,
+0.50 m default). The radar shows it as a dashed red ring. The
+picked value resets to 0.50 m when the server restarts.
+
+**Seeing what the LiDAR sees:** the video shows a cyan marker at
+the center — that's where the beam points — labeled with the
+live distance. When nothing is in range the label reads `inf`
+on the video and `∞` on the radar, and the rover treats it as
+clear and keeps driving. (The marker sits a little high if the
+camera is tilted down a lot.)
+
+**Radar (bird's-eye view):** the top-right **📡 Radar** panel (300 px,
+bigger since Nov 23) shows the rover in the middle with recent
+LiDAR readings plotted around it — the green dot is the live TF-Luna
+reading straight ahead, cyan dots are the LD19's full 360° scan,
+yellow dots are the last few seconds of readings. Rings are
+1 m / 2 m / 3 m.
 Honest limit: there is no gyro, encoder, or position tracking, so
 the heading is dead reckoning from commanded turns and the picture
 is only good for a few seconds while the rover turns in place or
@@ -369,57 +386,101 @@ the room of small stuff for the first run — the beam sits a few cm
 up, so very low obstacles can hide under it. Keep the first run
 short and watch it.
 
-**Limits, honestly:** the LiDAR is one beam straight ahead — it
-can't see to the sides, and it can't see glass or very dark/shiny
+**Limits, honestly:** the TF-Luna is one beam straight ahead, but
+the LD19 now covers ±30° to either side of forward, so obstacles
+just off the centerline get caught too — anything behind or well to
+the side is still unseen. Neither LiDAR sees glass or very dark/shiny
 surfaces well. The camera fallback still false-triggers on
 patterned floors and rugs when the LiDAR is offline. Distance under
-0.2 m is unreliable (the sensor's own limit).
+0.2 m is unreliable (the TF-Luna's own limit).
 
-## Phase 9 — Signs: the rover follows hand-drawn signs
+## LD19 spinning LiDAR: 360° scan on the radar (Nov 21)
 
-Draw a sign on paper — an arrow, a shape, a symbol, anything
-distinctive — and tape it where the rover should act. The rover
-learns what the sign looks like, then follows a trail of signs on
-its own, running each sign's instruction when it reaches it.
+The youyeetoo FHL-LD19 kit is the mapping sensor: it spins ~10
+times a second and measures a full 360-degree scan (12 m range).
+The drive page's radar now draws that scan as cyan dots around
+the rover, alongside the TF-Luna's green forward dot and yellow
+trail. Obstacle avoid uses both sensors — the LD19's forward arc
+(±30°) watches the surroundings and the TF-Luna watches the low
+front; either one under the minimum distance stops the rover and
+turns it left, and it spins until the front opens up instead of
+backing up. The map (SLAM) is built — see Phase 10 below.
 
-**How it works:** when you record a sign, the rover takes the
-current view and stores its visual fingerprint (ORB keypoints —
-distinctive corners and patterns in the image) plus how big the
-sign looked in the frame, in a `signs/` folder on the Pi, not the
-photo itself. Tap **🪧 Follow signs** and the rover drives forward
-on its own at 70% speed (50% won't move the loaded rover; full power
-shakes the video — turns stay at 100% because their 90° timing was
-calibrated there), watching for recorded signs. A sign only counts when
-it looks about as big as when you recorded it (70–150% of the
-recorded size) — so the rover acts at the right spot, not from
-across the room. When a sign fires, the rover runs its instruction:
-turn left, turn right, go straight, back up, or stop. The same sign
-can't fire again for 5 seconds.
+**Set up:** plug the LD19 kit's USB adapter into a Pi USB port.
+The server auto-detects which port is the LD19 by its data
+signature (0x54 header + CRC), skipping the TF-Luna's port, so
+it doesn't matter which ttyUSB port each adapter lands on and
+the LD19 never steals the TF-Luna's port. No extra install —
+pyserial is already there from the Nov 14 commands. The mount
+is the printed gantry (see `ld19_gantry.py` / the 3MF): legs
+bolted to the side plates, sensor on top above the camera mast.
+Test it first with the standalone script (`ld19_test.py`):
+`python3 ld19_test.py --selftest`, then `python3 ld19_test.py`
+and point the rover at a flat wall ~1 m away — the 0-degree
+sector should read ~1000 mm. Compare with a tape measure.
 
-**Run it:** drive the rover up to a sign so it fills a good part of
-the view, then tap **🪧 Record sign**. A panel opens showing a
-snapshot — that's exactly what it will remember — type a name, pick
-the instruction, tap **Save**. **🪧 Signs** lists what you've saved,
-with a ✕ to delete. Then tap **🪧 Follow signs** and watch it go.
-The top-right of the page shows the last sign it saw ("🪧 arrow-left").
-Tap the button again (or any D-pad button) to stop, and it stops if
-the page loses contact for 3 seconds.
+**On the page:** the radar shows the LD19 scan as cyan dots plus
+a `LD19 x.x Hz` label. If the sensor is unplugged the dots just
+don't appear — the TF-Luna avoid and the rest of the page keep
+working. `GET /ld19` returns the scan (360 bins, index = degree,
+0 = sensor front, clockwise); `/debug` shows the LD19's port,
+spin rate, point count, and packet counts.
 
-**Tips:** draw bold, high-contrast signs — thick black marker on
-white paper works best. Fill a good part of the view when recording.
-Record each sign from the distance the rover will approach it from,
-since size is the trigger. If a sign never fires, it was probably
-recorded too small or too faint — re-record closer and bolder. If
-it fires too early or from too far, the size window
-(`SIGN_SIZE_MIN` / `SIGN_SIZE_MAX` in rover_server.py) can be
-tightened.
+**Calibration:** the scan's 0-degree direction is the sensor's
+front. If the scan looks rotated or mirrored once the sensor is
+mounted, set `LD19_ANGLE_OFFSET` in `rover_server.py` (degrees,
+added to every angle) — point the rover at a wall and check the
+front sector reads it. **Calibrated Nov 23, 2026:** the sensor's 0
+deg points at the rover's left, so with no offset the rover's right
+side showed at the front (top) of the radar. `-90.0` was tried first
+and rotated it the wrong way (front at the back, right on the left);
+`LD19_ANGLE_OFFSET = 90.0` is correct. **Honest limit:** the radar's rings top
+out at 3 m, so points beyond 3 m are clipped to the edge; the
+scan only appears once the sensor is mounted, plugged in, and
+spinning.
 
-**Limits, honestly:** it recognizes a sign from a similar angle and
-lighting. A big lighting change, or approaching from a very
-different angle, can miss. Turns are timed (90° is about 0.75 s,
-from the 180° spin), not measured, so a turn may over- or
-undershoot. A motion sensor (MPU6050) would make turns exact — a
-possible later upgrade.
+---
+
+## Phase 10 — Map: the rover draws a floor plan (Nov 23)
+
+The LD19's 360° scans accumulate into a floor-plan map as the
+rover drives. **How it works:** the map is a grid (20 × 20 m,
+5 cm per cell) centered on where the rover started. About twice a
+second the server takes the latest LD19 scan + the rover's pose
+and ray-casts each return into the grid: cells along the ray are
+free (white), the hit cell is a wall (black), unseen space stays
+dark gray. The rover's pose starts as dead reckoning from the
+motor throttles — but every scan is then matched against the map
+so far (a coarse-to-fine grid search that finds the pose where
+the scan's walls line up with the mapped walls), and the pose is
+corrected to that match. So the forward-speed guess and the
+dead-reckoned position don't matter: the LiDAR data pins the
+pose, and the map stays sharp instead of smearing as it drifts.
+
+**Use it:** tap **🗺 Map** on the drive page. The panel opens over
+the video (the D-pad stays visible, so you can drive while the
+map is open) and refreshes once a second. Drive the rover around
+a room slowly and the walls fill in. **Clear map** wipes the grid
+and resets the pose to the start — use it when you move the rover
+to a new room, or the old map will be drawn in the wrong place.
+`/map.json` gives the pose + cell counts; `/debug` shows the same.
+
+**Honest limits:** the pose correction only works where the
+scan overlaps walls already on the map — in a brand-new area
+there's nothing to match against yet, so it trusts the dead
+reckoning until the map fills in. The map only covers 20 m from
+the start; drive beyond the edge and it clips.
+
+**Nov 23 heading-sign fix:** the map first came out as a black
+scribble while the radar looked fine — the pose thread's heading
+had the wrong sign (a left turn *increased* the compass bearing,
+mirroring the pose, so every scan was projected with a flipped
+heading and the walls smeared into a blob). The radar doesn't
+use the pose, which is why it still looked right. Fixed: heading
+is a compass bearing, clockwise-positive (0 = north, 90 = east),
+so a left turn *decreases* it; the radar trail's x-sign was
+flipped to match. Verified by driving a square in simulation —
+the map now shows clean walls instead of a blob.
 
 ---
 
