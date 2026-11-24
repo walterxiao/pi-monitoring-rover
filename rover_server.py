@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Rover drive server — fullscreen camera, circular D-pad, line following,
-obstacle avoid.
+tour and go-to-goal (learned policy).
 
 Run on the Pi:
     python3 rover_server.py
@@ -33,37 +33,66 @@ loses contact for 3 seconds (the page heartbeats while auto is on).
 A watchdog also stops the motors within ~1.5 seconds if commands stop
 arriving, so the rover can never run away on its own.
 
-OBSTACLE AVOID: tap "🚧 Obstacle Avoid" and the rover explores on its
-own, keeping away from obstacles. The TF-Luna LiDAR measures the
-distance straight ahead about 100 times a second: clear (at or
-beyond the minimum distance picked on the drive page, 0.5 m by
-default, or nothing in range) it keeps driving forward; blocked
-(under the picked distance) it spins left in place; too close
-(under 0.25 m) it backs up for space instead of turning. If the
-LiDAR is offline the rover stops and waits — it
-never drives blind. Escape
-moves are committed, never flip-flopped: it keeps turning one way (up
-to a full turn) instead of switching left/right every frame, and if
-turning doesn't clear the path it backs up for a second to get space
-and tries turning again. If it's blocked on all sides for 10 seconds
-straight it stops and says "stuck". Same safety as line following:
-any D-pad button takes over instantly, and it stops if the page
-loses contact for 3 seconds. The video shows a cyan marker at the
-center where the LiDAR beam points, labeled with the live distance
-("inf" when nothing is in range). The drive page also shows a bird's-eye
-radar view (top right): the rover in the middle, recent distance
-readings plotted around it, a dashed red ring at the picked minimum
-distance, and ∞ when nothing is in range. The radar is rough — there is no gyro or
-position tracking, so the picture is only good for a few seconds
-while the rover turns or sits still.
+SAFETY (BOTH LIDARS): the learned modes (Tour and Go to goal) are
+overridden by one rule — if EITHER the LD19's forward arc or the
+TF-Luna's low front beam sees an obstacle under the minimum
+distance picked on the drive page (0.5 m by default), the rover
+stops and turns away instead of following the policy, using the
+minimum-angle escape from the full 360° LD19 sweep (left or
+right, whichever is the smaller turn), so it gets out of a corner
+instead of circling it. It never backs up. If both LiDARs are
+offline the rover stops and waits — it never drives blind. The
+"Min dist" slider sets that threshold (0.30–2.00 m). Any D-pad
+button takes over instantly, and the rover stops if the page
+loses contact for 3 seconds.
+
+MANUAL SAFETY: D-pad / keyboard driving is also protected. When
+you drive forward or back, the rover slows down as an obstacle
+approaches (below 1.0 m) and will not drive into it (stops at
+0.30 m). Forward uses the LD19 forward arc + TF-Luna; reverse
+uses the LD19 rear arc. The slow-down is enforced both when the
+command arrives and continuously between commands (10 Hz), so a
+wall that appears suddenly is caught in ~100 ms. Turns (spinning
+in place) are not limited. If both LiDARs are offline the rover
+drives unprotected, as before — the safety is best-effort. The video shows a cyan marker at
+the center where the TF-Luna beam points, labeled with the live
+distance ("inf" when nothing is in range). The drive page also
+shows a bird's-eye radar view (top right): the rover in the
+middle, recent distance readings plotted around it, a dashed red
+ring at the picked minimum distance, and ∞ when nothing is in
+range.
 
 LD19: the spinning LiDAR (youyeetoo FHL-LD19 kit) is the mapping
 sensor. It spins ~10 times a second and measures a full 360-degree
 scan, and the drive page's radar draws that scan as cyan dots around
-the rover. Obstacle avoid still uses the TF-Luna's single forward
-beam. The LD19's 0-degree direction is the sensor's front; if the
+the rover. The TF-Luna's single forward beam still watches the low
+front. The LD19's 0-degree direction is the sensor's front; if the
 scan looks rotated or mirrored once the sensor is mounted, the
 LD19_ANGLE_OFFSET in the code rotates it in software.
+
+GO TO GOAL (LEARNED POLICY): tap the map to set a goal (red marker),
+then tap "🤖 Go to goal" and the rover drives itself there using the
+policy Walter trained on his Mac (PPO, 500k steps, 87% in sim),
+loaded from rover_policy.onnx with ONNX Runtime. It runs at 10 Hz,
+reading the live LD19 scan and the map pose. The both-LiDAR safety
+rule (above) overrides it when blocked. It stops and says "goal
+reached" within 0.25 m of the goal. Any D-pad press takes over
+instantly, and it stops if the page loses contact for 3 seconds.
+The ONNX file and onnxruntime must be on the Pi (see BUILD_GUIDE.md).
+
+TOUR (THE EXPLORE MODE): tap "🗺️ Tour" and the same policy drives,
+but the goal is virtual — every second the rover aims a few metres
+out into the most open corridor the LD19 sees, so the goal keeps
+moving and the rover tours the house instead of driving to a point.
+It never "arrives", so it never stops on its own. This is the
+rover's only explore mode now: the old rule-based Obstacle Avoid
+was consolidated into it (Nov 24) — the policy already avoids
+obstacles, and the rule-based logic lives on as the safety
+override above, not as a separate mode. Same D-pad takeover, same
+3-second heartbeat. It doesn't remember where it's been (the
+policy only sees the LiDAR, not the map), so it can revisit rooms
+— a dedicated explore policy would be needed for methodical
+coverage.
 
 The camera is shared: one background thread captures frames, and both
 the video stream and the line follower read the latest frame, so you
@@ -158,26 +187,31 @@ PAGE = """<!DOCTYPE html>
            border-radius: 20px; border: none;
            background: rgba(45,55,72,0.8); color: #fff; }
   #autotoggle.on { background: rgba(56,161,105,0.9); }
-  #avoidtoggle { top: 94px; left: 16px; font-size: 16px; padding: 8px 14px;
-           border-radius: 20px; border: none;
-           background: rgba(45,55,72,0.8); color: #fff; }
-  #avoidtoggle.on { background: rgba(56,161,105,0.9); }
-  #mindistctl { top: 136px; left: 16px; font-size: 14px; padding: 8px 12px;
+  #mindistctl { top: 94px; left: 16px; font-size: 14px; padding: 8px 12px;
            border-radius: 20px; background: rgba(45,55,72,0.8);
            color: #fff; display: flex; gap: 8px; align-items: center; }
   #mindistctl input { width: 88px; accent-color: #48bb78; }
   #mindistval { min-width: 46px; }
-  #maptoggle { top: 178px; left: 16px; font-size: 16px; padding: 8px 14px;
+  #maptoggle { top: 136px; left: 16px; font-size: 16px; padding: 8px 14px;
            border-radius: 20px; border: none;
            background: rgba(45,55,72,0.8); color: #fff; }
   #maptoggle.on { background: rgba(56,161,105,0.9); }
+  #policytoggle { top: 178px; left: 16px; font-size: 16px; padding: 8px 14px;
+           border-radius: 20px; border: none;
+           background: rgba(45,55,72,0.8); color: #fff; }
+  #policytoggle.on { background: rgba(56,161,105,0.9); }
+  #tourtoggle { top: 220px; left: 16px; font-size: 16px; padding: 8px 14px;
+           border-radius: 20px; border: none;
+           background: rgba(45,55,72,0.8); color: #fff; }
+  #tourtoggle.on { background: rgba(56,161,105,0.9); }
   #mappanel { top: 60px; left: 50%; transform: translateX(-50%);
            width: min(92vw, 420px); background: rgba(0,0,0,0.85);
            border: 1px solid rgba(255,255,255,0.25); border-radius: 12px;
            padding: 10px; display: none; z-index: 20; }
   #mapimg { width: 100%; aspect-ratio: 1; display: block;
-           border-radius: 8px; background: #222; }
+           border-radius: 8px; background: #222; cursor: crosshair; }
   #mapstats { font-size: 13px; color: #a0aec0; margin: 8px 2px 4px; }
+  #maphint { font-size: 12px; color: #a0aec0; margin: 0 2px 4px; }
   #mapbtns { display: flex; gap: 8px; }
   #mapbtns button { flex: 1; font-size: 15px; padding: 8px 10px;
            border-radius: 16px; border: none;
@@ -211,16 +245,18 @@ PAGE = """<!DOCTYPE html>
   <button id="radartoggle" class="overlay">\U0001F4E1 Radar: On</button>
   <canvas id="radar" class="overlay" width="300" height="300"></canvas>
   <button id="autotoggle" class="overlay">\U0001F916 Line Follow: Off</button>
-  <button id="avoidtoggle" class="overlay">\U0001F6A7 Obstacle Avoid: Off</button>
   <div id="mindistctl" class="overlay">
     <label for="mindist">Min dist</label>
     <input id="mindist" type="range" min="0.3" max="2" step="0.05" value="0.5">
     <span id="mindistval">0.50 m</span>
   </div>
   <button id="maptoggle" class="overlay">\U0001F5FA Map: Off</button>
+  <button id="policytoggle" class="overlay">\U0001F916 Go to goal: Off</button>
+  <button id="tourtoggle" class="overlay">\U0001F5FA Tour: Off</button>
   <div id="mappanel" class="overlay">
     <img id="mapimg" src="/map.png" alt="Rover map">
     <div id="mapstats">map loading…</div>
+    <div id="maphint">Tap the map to set the goal, then press Go to goal.</div>
     <div id="mapbtns">
       <button id="mapclear">Clear map</button>
       <button id="mapclose">Close</button>
@@ -262,7 +298,6 @@ PAGE = """<!DOCTYPE html>
     autotoggle.textContent = '\U0001F916 Line Follow: ' + (on ? 'On' : 'Off');
     autotoggle.classList.toggle('on', on);
     if (on) {
-      if (avoidOn) setAvoid(false);
       fetch('/auto/on', {method: 'POST'})
         .then(r => r.text()).then(t => status.textContent = t);
       autoTimer = setInterval(() => {
@@ -277,33 +312,76 @@ PAGE = """<!DOCTYPE html>
     }
   }
   autotoggle.addEventListener('click', () => setAuto(!autoOn));
-  // Obstacle-avoid toggle. Same heartbeat pattern as line follow.
-  const avoidtoggle = document.getElementById('avoidtoggle');
-  let avoidOn = false;
-  let avoidTimer = null;
-  function setAvoid(on) {
-    avoidOn = on;
-    avoidtoggle.textContent = '\U0001F6A7 Obstacle Avoid: ' + (on ? 'On' : 'Off');
-    avoidtoggle.classList.toggle('on', on);
+  // Learned policy (ONNX): tap the map to set a goal, then "Go to
+  // goal" drives the rover there with the trained model. Same
+  // heartbeat pattern as line follow; any D-pad press takes over. If
+  // starting fails (no goal set, or the model file is missing) the
+  // toggle flips back off and the status says why.
+  const policytoggle = document.getElementById('policytoggle');
+  let policyOn = false;
+  let policyTimer = null;
+  function setPolicy(on) {
+    policyOn = on;
+    policytoggle.textContent = '\U0001F916 Go to goal: ' + (on ? 'On' : 'Off');
+    policytoggle.classList.toggle('on', on);
     if (on) {
       if (autoOn) setAuto(false);
-      fetch('/avoid/on', {method: 'POST'})
-        .then(r => r.text()).then(t => status.textContent = t);
-      avoidTimer = setInterval(() => {
-        fetch('/avoid/ping', {method: 'POST'})
+      if (tourOn) setTour(false);
+      fetch('/policy/on', {method: 'POST'})
+        .then(r => r.text().then(t => {
+          status.textContent = t;
+          if (!r.ok) setPolicy(false);
+        }))
+        .catch(() => { setPolicy(false); status.textContent = 'no connection'; });
+      policyTimer = setInterval(() => {
+        fetch('/policy/ping', {method: 'POST'})
           .then(r => r.text()).then(t => status.textContent = t)
-          .catch(() => { setAvoid(false); status.textContent = 'no connection'; });
+          .catch(() => { setPolicy(false); status.textContent = 'no connection'; });
       }, 1000);
     } else {
-      if (avoidTimer) { clearInterval(avoidTimer); avoidTimer = null; }
-      fetch('/avoid/off', {method: 'POST'})
+      if (policyTimer) { clearInterval(policyTimer); policyTimer = null; }
+      fetch('/policy/off', {method: 'POST'})
         .then(r => r.text()).then(t => status.textContent = t);
     }
   }
-  avoidtoggle.addEventListener('click', () => setAvoid(!avoidOn));
-  // Minimum avoidance distance picker: avoid turns when something
-  // is closer than this (0.30–2.00 m, 0.50 m default). The label
-  // follows the slider live; the value is sent when released.
+  policytoggle.addEventListener('click', () => setPolicy(!policyOn));
+  // Tour mode: the same learned policy, but the goal is virtual —
+  // the rover aims at the most open space and the goal keeps
+  // moving, so it tours the house instead of driving to a point.
+  // Same heartbeat pattern as Go to goal; any D-pad press takes
+  // over. If starting fails (model missing, or the LD19 is
+  // offline) the toggle flips back off and the status says why.
+  const tourtoggle = document.getElementById('tourtoggle');
+  let tourOn = false;
+  let tourTimer = null;
+  function setTour(on) {
+    tourOn = on;
+    tourtoggle.textContent = '\U0001F5FA Tour: ' + (on ? 'On' : 'Off');
+    tourtoggle.classList.toggle('on', on);
+    if (on) {
+      if (autoOn) setAuto(false);
+      if (policyOn) setPolicy(false);
+      fetch('/tour/on', {method: 'POST'})
+        .then(r => r.text().then(t => {
+          status.textContent = t;
+          if (!r.ok) setTour(false);
+        }))
+        .catch(() => { setTour(false); status.textContent = 'no connection'; });
+      tourTimer = setInterval(() => {
+        fetch('/tour/ping', {method: 'POST'})
+          .then(r => r.text()).then(t => status.textContent = t)
+          .catch(() => { setTour(false); status.textContent = 'no connection'; });
+      }, 1000);
+    } else {
+      if (tourTimer) { clearInterval(tourTimer); tourTimer = null; }
+      fetch('/tour/off', {method: 'POST'})
+        .then(r => r.text()).then(t => status.textContent = t);
+    }
+  }
+  tourtoggle.addEventListener('click', () => setTour(!tourOn));
+  // Minimum safety distance picker: the policy turns away when
+  // something gets closer than this (0.30–2.00 m, 0.50 m default).
+  // The label follows the slider live; the value is sent when released.
   // Blur after sending so arrow keys drive again right away.
   const mindist = document.getElementById('mindist');
   const mindistval = document.getElementById('mindistval');
@@ -313,7 +391,7 @@ PAGE = """<!DOCTYPE html>
   mindist.addEventListener('input', showMindist);
   mindist.addEventListener('change', () => {
     showMindist();
-    fetch('/avoid/mindist?m=' + mindist.value, {method: 'POST'})
+    fetch('/safety/mindist?m=' + mindist.value, {method: 'POST'})
       .then(r => r.text()).then(t => status.textContent = t)
       .catch(() => status.textContent = 'no connection');
     mindist.blur();
@@ -326,7 +404,6 @@ PAGE = """<!DOCTYPE html>
     b.addEventListener('pointerdown', e => {
       e.preventDefault();
       if (autoOn) setAuto(false);
-      if (avoidOn) setAvoid(false);
       start(cmd);
     });
     b.addEventListener('pointerup', halt);
@@ -350,7 +427,6 @@ PAGE = """<!DOCTYPE html>
     if (timer) { clearInterval(timer); timer = null; }
     if (cur) {
       if (autoOn) setAuto(false);
-      if (avoidOn) setAvoid(false);
       keyCmd = cur;
       start(cur);
     } else {
@@ -382,7 +458,6 @@ PAGE = """<!DOCTYPE html>
   // around and stops by itself. Any D-pad button cancels it mid-spin.
   document.getElementById('spinbtn').addEventListener('click', () => {
     if (autoOn) setAuto(false);
-    if (avoidOn) setAvoid(false);
     fetch('/spin180', {method: 'POST'})
       .then(r => r.text()).then(t => status.textContent = t)
       .catch(() => status.textContent = 'no connection');
@@ -447,7 +522,7 @@ PAGE = """<!DOCTYPE html>
     rctx.fillText('2m', cx + 3, cy - 2 * R / 3 + 3);
     rctx.fillText('3m', cx + 3, cy - R + 10);
     if (data && data.stop_m) {
-      // Dashed red ring = the picked minimum avoidance distance.
+      // Dashed red ring = the picked minimum safety distance.
       const sr = R * Math.min(data.stop_m, RADAR_MAX_M) / RADAR_MAX_M;
       rctx.strokeStyle = 'rgba(252,129,129,0.8)';
       rctx.setLineDash([4, 4]);
@@ -554,9 +629,12 @@ PAGE = """<!DOCTYPE html>
   function refreshMap() {
     mapimg.src = '/map.png?t=' + Date.now();
     fetch('/map.json').then(r => r.json()).then(s => {
-      mapstats.textContent = 'x ' + s.x + ' m, y ' + s.y + ' m, heading ' +
+      let txt = 'x ' + s.x + ' m, y ' + s.y + ' m, heading ' +
         s.heading + '° — ' + s.scans + ' scans, ' + s.occupied +
         ' wall cells, ' + s.free + ' free cells';
+      if (s.goal_x !== null && s.goal_x !== undefined)
+        txt += ' — goal (' + s.goal_x + ', ' + s.goal_y + ')';
+      mapstats.textContent = txt;
     }).catch(() => { mapstats.textContent = 'map stats unavailable'; });
   }
   function setMap(on) {
@@ -572,6 +650,25 @@ PAGE = """<!DOCTYPE html>
   document.getElementById('mapclear').addEventListener('click', () => {
     fetch('/map/clear', {method: 'POST'}).then(r => r.text())
       .then(t => { status.textContent = t; refreshMap(); });
+  });
+  // Tap the map to set the goal. The map image is 400x400 px (1 px
+  // = 1 cell = 5 cm), centered on (0, 0) at pixel (200, 200), so a
+  // tap at pixel (px, py) is x = (px-200)*0.05, y = (200-py)*0.05.
+  // Works whether the policy is on or off — when on, the rover
+  // retargets live.
+  mapimg.addEventListener('click', (e) => {
+    const rect = mapimg.getBoundingClientRect();
+    const px = (e.clientX - rect.left) / rect.width * 400;
+    const py = (e.clientY - rect.top) / rect.height * 400;
+    const gx = (px - 200) * 0.05;
+    const gy = (200 - py) * 0.05;
+    fetch('/policy/goal?x=' + gx.toFixed(2) + '&y=' + gy.toFixed(2),
+      {method: 'POST'})
+      .then(r => r.text()).then(t => {
+        status.textContent = t;
+        refreshMap();
+      })
+      .catch(() => status.textContent = 'no connection');
   });
 </script>
 </body></html>
@@ -990,7 +1087,6 @@ def debug_stats():
         f"blue px in whole frame (BGR test): {whole_count}",
         f"detector: found={found} offset={offset:+.2f} count={count}",
         f"auto status: {status}",
-        f"avoid status: {AVOID['status']}",
         f"lidar: online={LIDAR['online']} dist={LIDAR['dist_m']} "
         f"strength={LIDAR['strength']} frames={LIDAR['frames']} "
         f"bad={LIDAR['bad']} err={LIDAR['error'] or 'none'}",
@@ -1235,15 +1331,16 @@ def lidar_reading():
 # the latest distance per degree in LD19["bins"] (a live 360-degree
 # picture, refreshed ~10x a second) and the /ld19 endpoint serves it
 # to the drive page, which draws the scan as cyan dots on the radar.
-# Obstacle avoid uses both LiDARs: the LD19's forward arc watches
+# The safety override uses both LiDARs: the LD19's forward arc watches
 # the surroundings in front (see ld19_forward_min) and the TF-Luna
 # watches the low front — if either reports an obstacle under the
-# minimum distance, the rover stops and turns left.
+# minimum distance, the rover stops and turns away (minimum-angle
+# escape).
 # The reader auto-detects its port by data signature (0x54 header +
 # CRC8), skipping the TF-Luna's port, so the two adapters are told
 # apart by what they send, not by name. If the LD19 is unplugged or
 # pyserial is missing, this just reports offline — the server, the
-# TF-Luna avoid, and the camera keep working.
+# TF-Luna safety check, and the camera keep working.
 # Angle: left-handed, sensor front = 0 deg, increasing clockwise.
 # LD19_ANGLE_OFFSET rotates the scan if the sensor's 0 deg does not
 # point at the rover's front once mounted — calibrate by pointing
@@ -1260,6 +1357,12 @@ LD19_AVOID_HALF_ANGLE = 30  # avoid watches the LD19's forward arc,
 # +/-30 deg around bin 0 (rover front) — wide enough to catch an
 # obstacle the narrow TF-Luna beam threads past, narrow enough not
 # to treat a side wall as a head-on block.
+MANUAL_SLOW_M = 1.0  # manual driving: below this distance the
+# rover slows down as it approaches an obstacle.
+MANUAL_STOP_M = 0.30  # manual driving: at or below this distance
+# the rover will not drive toward the obstacle at all.
+MANUAL_REAR_HALF_ANGLE = 45  # reverse protection watches the
+# LD19's rear arc, +/-45 deg around bin 180 (rover back).
 LD19 = {"online": False, "port": None, "hz": 0.0, "points": 0,
         "packets": 0, "bad": 0, "updated": 0.0, "error": "",
         "bins": [None] * 360}  # whole degree -> latest dist (m) or None
@@ -1466,6 +1569,136 @@ def ld19_forward_min():
     return (best, best_ang)
 
 
+def ld19_rear_min():
+    """Closest LD19 return in the rear arc, as (dist_m, angle_deg),
+    or None if the LD19 is offline or stale (>1 s). Returns
+    (inf, None) when it is alive but sees nothing in the arc
+    (clear). Used for reverse protection in manual driving."""
+    with LD19_LOCK:
+        if not LD19["online"]:
+            return None
+        if time.time() - LD19["updated"] > 1.0:
+            return None
+        bins = list(LD19["bins"])
+    best = None
+    best_ang = None
+    for a in range(180 - MANUAL_REAR_HALF_ANGLE,
+                   180 + MANUAL_REAR_HALF_ANGLE + 1):
+        d = bins[a % 360]
+        if d is None:
+            continue
+        if best is None or d < best:
+            best = d
+            best_ang = a
+    if best is None:
+        return (float("inf"), None)
+    return (best, best_ang)
+
+
+def _manual_obstacle_dist(cmd):
+    """Closest obstacle distance (m) in the direction a manual
+    command would move the rover, or None if neither sensor has
+    data for that direction. Forward uses the LD19 forward arc
+    and the TF-Luna (closest of the two); reverse uses the LD19
+    rear arc. Returns inf when the sensors are alive and clear."""
+    if cmd == "forward":
+        dists = []
+        fwd = ld19_forward_min()
+        if fwd is not None:
+            dists.append(fwd[0])
+        tf = lidar_reading()
+        if tf is not None and tf[0] is not None and tf[0] > 0:
+            dists.append(tf[0])
+        if not dists:
+            return None
+        return min(dists)
+    if cmd == "back":
+        rear = ld19_rear_min()
+        if rear is None:
+            return None
+        return rear[0]
+    return None
+
+
+def manual_speed_factor(cmd):
+    """Speed factor [0.0, 1.0] for a manual drive command, from the
+    obstacle distance in that direction. 1.0 = full speed (clear,
+    or no sensor data — the rover drives unprotected, as before);
+    0.0 = stop (at or inside MANUAL_STOP_M); linear between
+    MANUAL_STOP_M and MANUAL_SLOW_M. Turns and stop are unscaled."""
+    if cmd not in ("forward", "back"):
+        return 1.0
+    dist = _manual_obstacle_dist(cmd)
+    if dist is None or dist == float("inf"):
+        return 1.0
+    if dist <= MANUAL_STOP_M:
+        return 0.0
+    if dist >= MANUAL_SLOW_M:
+        return 1.0
+    return (dist - MANUAL_STOP_M) / (MANUAL_SLOW_M - MANUAL_STOP_M)
+
+
+def manual_safety_loop():
+    """Continuously caps manual driving speed between /cmd/ repeats
+    (the page re-sends a held button every 500 ms; this loop runs
+    at 10 Hz so a wall that appears suddenly is caught in ~100 ms).
+    Only ever slows the rover down, never speeds it up — the next
+    /cmd/ re-send restores speed when the path clears. Does nothing
+    when auto / tour / policy is running (those have their own
+    safety override) or when the rover is not moving manually."""
+    while True:
+        time.sleep(0.1)
+        with AUTO_LOCK:
+            auto_on = AUTO["active"]
+        with POLICY_LOCK:
+            policy_on = POLICY["active"]
+        with TOUR_LOCK:
+            tour_on = TOUR["active"]
+        if auto_on or policy_on or tour_on:
+            continue
+        with LOCK:
+            if not STATE["moving"]:
+                continue
+            tl, tr = STATE["throttle_l"], STATE["throttle_r"]
+            if time.time() - STATE["last_cmd_time"] > 1.5:
+                continue
+        # Both throttles negative = forward; both positive = back;
+        # mixed = spinning in place (no translation, no cap needed).
+        if tl < 0 and tr < 0:
+            cmd = "forward"
+        elif tl > 0 and tr > 0:
+            cmd = "back"
+        else:
+            continue
+        factor = manual_speed_factor(cmd)
+        allowed = factor  # full speed is throttle 1.0
+        # The motors need ~20% to move the loaded rover (same
+        # floor as apply_command): below that the rover stalls, so
+        # clamp the crawl to 20% and stop only when the factor
+        # itself is 0 — otherwise the rover creeps forever at a
+        # throttle too small to matter.
+        if 0 < allowed < 0.20:
+            allowed = 0.20
+        mag = max(abs(tl), abs(tr))
+        if mag > allowed:
+            with LOCK:
+                # Re-check under the lock: only cap if still moving
+                # the same way (a new command may have arrived).
+                if STATE["moving"] and STATE["throttle_l"] == tl \
+                        and STATE["throttle_r"] == tr:
+                    if allowed <= 0:
+                        stop_all()
+                        STATE["throttle_l"] = 0.0
+                        STATE["throttle_r"] = 0.0
+                        STATE["moving"] = False
+                    else:
+                        nl = -allowed if tl < 0 else allowed
+                        nr = -allowed if tr < 0 else allowed
+                        set_motors(nl, nr)
+                        STATE["throttle_l"] = nl
+                        STATE["throttle_r"] = nr
+
+
 ESCAPE_MARGIN_M = 0.2  # an escape arc must be clear past
 # stop_m + this, so the rover has room to drive forward after it
 # turns instead of getting blocked again at once.
@@ -1524,19 +1757,16 @@ def ld19_escape_direction(stop_m):
     return None
 
 
-AVOID = {"active": False, "last_ping": 0.0, "status": "avoid off"}
-AVOID_LOCK = threading.Lock()
-# Obstacle-avoid settings. The rover drives continuously at full
-# power (low power can't move the loaded rover) — no stopping to
-# scan; each loop reads the forward distance from both LiDARs (the
-# LD19's forward arc watches the surroundings, the TF-Luna watches
-# the low front) and either drives forward or turns in place until
-# the front opens up. It never backs up, and the turn side is the
-# minimum-angle escape from the full LD19 sweep (left or right,
-# whichever is the smaller turn) — left only as a fallback when
-# the LD19 has no answer.
-LIDAR_STOP_M = 0.5     # default minimum avoidance distance (m)
-# The minimum avoidance distance is pickable on the drive page
+# Safety distance. The minimum distance (m) under which the
+# both-LiDAR safety override stops the policy and turns away
+# (minimum-angle escape from the full LD19 sweep — left or right,
+# whichever is the smaller turn; left only as a fallback when the
+# LD19 has no answer). The override reads the forward distance
+# from both LiDARs: the LD19's forward arc watches the
+# surroundings, the TF-Luna watches the low front. It never backs
+# up.
+LIDAR_STOP_M = 0.5     # default minimum safety distance (m)
+# The minimum safety distance is pickable on the drive page
 # (0.30–2.00 m); the picked value lives here and resets to the
 # default when the server restarts.
 MINDIST_MIN_M = 0.3
@@ -1551,138 +1781,11 @@ def get_mindist():
 
 
 def set_mindist(m):
-    """Clamp a picked minimum avoidance distance and store it."""
+    """Clamp a picked minimum safety distance and store it."""
     m = max(MINDIST_MIN_M, min(MINDIST_MAX_M, float(m)))
     with MINDIST_LOCK:
         MINDIST["m"] = m
     return m
-AVOID_STUCK_TIME = 10.0   # seconds blocked in a row = stuck
-
-
-def avoid_set_status(text):
-    with AVOID_LOCK:
-        AVOID["status"] = text
-
-
-def avoid_stop(reason):
-    """Stop avoid mode (and the motors)."""
-    with AVOID_LOCK:
-        was_active = AVOID["active"]
-        AVOID["active"] = False
-        AVOID["status"] = reason
-    apply_drive(0, 0)
-    print(f"avoid: {reason}", flush=True)
-    return was_active
-
-
-def avoid_loop():
-    """Obstacle-avoid control loop. Each cycle (~10 Hz) it reads the
-    forward distance from both LiDARs: the LD19's forward arc
-    watches the surroundings in front, and the TF-Luna watches the
-    low front (its beam sits a few cm up). If EITHER sensor reports
-    an obstacle under the picked minimum distance, the rover stops
-    and turns in place until the front opens up. It never backs
-    up: the LD19 sees 360 degrees, so spinning finds the opening.
-    The turn direction is the minimum-angle escape: when the rover
-    first gets blocked it scans the full 360-degree LD19 sweep for
-    the nearest clear direction and turns that way (left or right,
-    whichever is the smaller turn), so it gets out of a corner
-    instead of circling it. If the LD19 is offline it falls back
-    to turning left. If the path stays blocked for
-    AVOID_STUCK_TIME straight (no opening after several full
-    spins), it stops and reports stuck. If both LiDARs are offline
-    or stale, it stops and waits — it never drives blind. Runs
-    while AVOID['active'] and the page heartbeat is alive."""
-    blocked_since = None
-    escape_dir = "left"  # turn side for the current block, picked
-    escape_angle = 0  # from the LD19 when the block starts
-    while True:
-        with AVOID_LOCK:
-            active = AVOID["active"]
-            last_ping = AVOID["last_ping"]
-        if not active:
-            time.sleep(0.1)
-            continue
-        if time.time() - last_ping > 3.0:
-            avoid_stop("page gone — avoid stopped")
-            time.sleep(0.1)
-            continue
-        now = time.time()
-        # --- sense: LD19 watches the surroundings in front (its
-        # forward arc), TF-Luna watches the low front. If EITHER
-        # reports an obstacle under the minimum distance, the rover
-        # stops and turns. A sensor that is offline or stale just
-        # doesn't contribute; only when NEITHER sensor has data do
-        # we stop and wait — never drive blind. A fresh reading with
-        # no obstacle in range means clear: drive on.
-        ld = ld19_forward_min()
-        tf = lidar_reading()
-        if ld is None and tf is None:
-            apply_drive(0, 0)
-            avoid_set_status("both lidars offline — stopped")
-            time.sleep(0.1)
-            continue
-        stop_m = get_mindist()
-        # LD19 forward arc.
-        ld_m = None
-        if ld is not None and ld[0] != float("inf"):
-            ld_m = ld[0]
-        # TF-Luna low front beam (validate the same way as before).
-        # A bad reading is ignored if the LD19 has data; it only
-        # stops the rover when the LD19 has no data either.
-        tf_m = None
-        tf_bad = False
-        if tf is not None:
-            tf_m, tf_strength = tf
-            if tf_m is not None and not (
-                    0.0 <= tf_m <= 8.0 and 0 < tf_strength < 65535):
-                tf_bad = True
-                tf_m = None
-        if tf_bad and ld is None:
-            apply_drive(0, 0)
-            avoid_set_status("lidar bad reading — stopped")
-            time.sleep(0.1)
-            continue
-        # Closest reading from either sensor wins; a sensor that is
-        # alive but sees nothing contributes nothing (clear).
-        cands = []
-        if ld_m is not None:
-            cands.append((ld_m, f"ld19 {ld_m:.2f}m"))
-        if tf_m is not None:
-            cands.append((tf_m, f"tf {tf_m:.2f}m"))
-        if not cands:
-            dist_m = None
-            blocked = False
-            sensor = "∞"
-        else:
-            dist_m = min(d for d, _ in cands)
-            sensor = " · ".join(lbl for _, lbl in cands)
-            blocked = dist_m < stop_m
-        if not blocked:
-            blocked_since = None
-            escape_dir = "left"
-            escape_angle = 0
-            avoid_set_status(f"{sensor} — driving")
-            apply_drive(-1.0, -1.0)
-        else:
-            if blocked_since is None:
-                blocked_since = now
-                # Pick the escape side once per block: the smallest
-                # turn (left or right) that points the front at
-                # open space, from the full LD19 sweep. Falls back
-                # to left if the LD19 has no answer.
-                esc = ld19_escape_direction(stop_m)
-                if esc is not None:
-                    escape_dir, escape_angle = esc
-                else:
-                    escape_dir, escape_angle = "left", 0
-            if now - blocked_since > AVOID_STUCK_TIME:
-                avoid_stop("stuck — blocked on all sides")
-                continue
-            avoid_set_status(
-                f"{sensor} — turning {escape_dir} {escape_angle}°")
-            apply_command(escape_dir, 100)  # pose thread credits it
-        time.sleep(0.1)
 
 
 # --- Pose (dead reckoning) + occupancy-grid map -------------------------
@@ -1732,10 +1835,10 @@ def pose_loop():
     """Dead-reckoning pose, ~10 Hz. Reads the last commanded motor
     throttles and integrates the pose: forward speed from the mean
     throttle, turn rate from the throttle difference. This is the
-    SOLE owner of the heading — the avoid loop and spin_180 used to
-    credit turns via heading_add, but that double-counted once the
-    pose thread integrated the same turns from the throttles, so
-    those calls are gone. HEADING mirrors POSE for the radar trail
+    SOLE owner of the heading — spin_180 used to credit its turn
+    via heading_add, but that double-counted once the pose thread
+    integrated the same turn from the throttles, so that call is
+    gone. HEADING mirrors POSE for the radar trail
     and the /lidar endpoint."""
     last = time.time()
     while True:
@@ -1952,6 +2055,16 @@ def map_render_png():
         b1 = (int(rc - 6 * s + 6 * c), int(rr + 6 * c + 6 * s))
         b2 = (int(rc - 6 * s - 6 * c), int(rr + 6 * c - 6 * s))
         cv2.fillPoly(bgr, [np.array([nose, b1, b2])], (0, 200, 0))
+    # Goal marker (red) — the policy's target, set by tapping the map.
+    with POLICY_LOCK:
+        gx = POLICY["goal_x"]
+        gy = POLICY["goal_y"]
+    if gx is not None and gy is not None:
+        gc = MAP_CENTER + int(round(gx / MAP_CELL_M))
+        gr = MAP_CENTER - int(round(gy / MAP_CELL_M))
+        if 0 <= gc < MAP_CELLS and 0 <= gr < MAP_CELLS:
+            cv2.circle(bgr, (gc, gr), 6, (0, 0, 255), 2)
+            cv2.circle(bgr, (gc, gr), 2, (0, 0, 255), -1)
     ok, buf = cv2.imencode(".png", bgr)
     return buf.tobytes() if ok else None
 
@@ -1985,9 +2098,369 @@ def map_stats():
         scans = MAP["scans"]
     with POSE_LOCK:
         x, y, h = POSE["x"], POSE["y"], POSE["heading"]
+    with POLICY_LOCK:
+        gx = POLICY["goal_x"]
+        gy = POLICY["goal_y"]
     return {"x": round(x, 2), "y": round(y, 2),
             "heading": round(h, 1), "occupied": occ, "free": free,
-            "scans": scans, "size_m": MAP_SIZE_M, "cell_m": MAP_CELL_M}
+            "scans": scans, "size_m": MAP_SIZE_M, "cell_m": MAP_CELL_M,
+            "goal_x": (round(gx, 2) if gx is not None else None),
+            "goal_y": (round(gy, 2) if gy is not None else None)}
+
+
+# --- Learned policy (ONNX) — go to a goal --------------------------------
+# The go-to-goal policy Walter trained on his Mac (PPO, 500k steps,
+# 87% success in sim) runs on the Pi as an ONNX file. The Pi never
+# trains; it loads rover_policy.onnx with ONNX Runtime and runs it
+# at 10 Hz — the same step rate the policy was trained at.
+#
+# The observation is built exactly the way RoverEnv builds it:
+# 24 LD19 sectors (min distance per 15-degree sector, /12 m) +
+# goal bearing (sin, cos, relative to the heading) + goal distance
+# (/5 m). The LD19 bins are already indexed by angle from the
+# rover's front (bin 0 = front, clockwise), which is the same frame
+# the training rays use, so sector i is bins [i*15, i*15+15).
+# The model returns one int action: 0 = forward, 1 = left, 2 =
+# right, 3 = stop — the same commands the drive page sends.
+#
+# Safety is the both-LiDAR rule, and it
+# overrides the policy: if EITHER the LD19 forward arc or the
+# TF-Luna reports an obstacle under the picked minimum distance,
+# the rover turns (minimum-angle escape) instead of following the
+# policy; if both LiDARs are offline it stops and waits. The
+# policy was trained to avoid obstacles itself — the override is
+# a backstop for the sim-to-real gap, not the navigator.
+# The goal is set by tapping the map on the drive page; the rover
+# stops and reports "goal reached" within 0.25 m of it.
+POLICY_ONNX_PATH = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), "rover_policy.onnx")
+POLICY_GOAL_REACHED_M = 0.25  # GOAL_R in rover_env.py
+POLICY_DT = 0.1  # 10 Hz, the training step rate
+POLICY = {"active": False, "last_ping": 0.0, "status": "policy off",
+          "goal_x": None, "goal_y": None, "model": None,
+          "model_error": "", "tour": False, "goal_virtual": False}
+POLICY_LOCK = threading.Lock()
+
+# --- Tour mode: the same policy, no fixed goal ---------------------------
+# Tour uses the go-to-goal policy with a virtual goal that points
+# at open space: every second (or when the rover gets close to the
+# current virtual goal) it picks the most open corridor from the
+# LD19 scan and aims a few metres out into it. The goal keeps
+# moving as the rover moves, so it never "arrives" — it just keeps
+# following open space through the house. No retraining, no new
+# model file; the tour is a goal source, the policy does the
+# driving. The same both-LiDAR safety override applies.
+TOUR_REPICK_S = 1.0  # pick a new virtual goal this often
+TOUR_GOAL_DIST_M = 2.5  # virtual goal this far out (m)
+TOUR_GOAL_CLOSE_M = 0.8  # repick when this close to the virtual goal
+TOUR = {"active": False, "last_ping": 0.0, "status": "tour off",
+        "goal_x": None, "goal_y": None, "repick_at": 0.0}
+TOUR_LOCK = threading.Lock()
+
+
+def policy_load_model():
+    """Load rover_policy.onnx with ONNX Runtime (lazy, once).
+    Returns True if the model is ready. On failure sets
+    POLICY['model_error'] with the reason (missing file or missing
+    onnxruntime) and returns False — the page reports it."""
+    with POLICY_LOCK:
+        if POLICY["model"] is not None:
+            return True
+        if not os.path.exists(POLICY_ONNX_PATH):
+            POLICY["model_error"] = (
+                "rover_policy.onnx not found — copy it to "
+                "~/pi-monitoring-rover/ (scp from the Mac)")
+            return False
+        try:
+            import onnxruntime as ort
+        except ImportError:
+            POLICY["model_error"] = (
+                "onnxruntime not installed — run: pip install "
+                "--break-system-packages onnxruntime")
+            return False
+        try:
+            POLICY["model"] = ort.InferenceSession(
+                POLICY_ONNX_PATH, providers=["CPUExecutionProvider"])
+        except Exception as e:
+            POLICY["model_error"] = f"could not load model: {e}"
+            return False
+        POLICY["model_error"] = ""
+        return True
+
+
+def policy_observation():
+    """Build the 27-float observation the policy was trained on,
+    from the live LD19 scan + pose + goal. Returns None if the
+    LD19 is offline/stale or no goal is set. Mirrors RoverEnv._obs
+    exactly (see rl_rover/rover_env.py)."""
+    with POLICY_LOCK:
+        gx = POLICY["goal_x"]
+        gy = POLICY["goal_y"]
+    if gx is None or gy is None:
+        return None
+    with LD19_LOCK:
+        if not LD19["online"] or time.time() - LD19["updated"] > 1.0:
+            return None
+        bins = list(LD19["bins"])
+    with POSE_LOCK:
+        px, py, ph = POSE["x"], POSE["y"], POSE["heading"]
+    # 24 sectors: min distance per 15-degree sector; a missing
+    # return counts as max range (12 m), same as the training sim.
+    import numpy as np
+    sectors = []
+    for i in range(24):
+        ds = [bins[(i * 15 + k) % 360] for k in range(15)]
+        ds = [d for d in ds if d is not None]
+        sectors.append((min(ds) if ds else 12.0) / 12.0)
+    # Bearing to the goal, relative to the heading (compass bearing,
+    # 0 = north/+y, clockwise-positive — atan2(dx, dy) is the
+    # bearing from +y, and the relative bearing wraps to [-180, 180]).
+    bearing = math.degrees(math.atan2(gx - px, gy - py))
+    rel = math.radians((bearing - ph + 180.0) % 360.0 - 180.0)
+    gd = math.hypot(gx - px, gy - py) / 5.0
+    obs = np.array(sectors + [math.sin(rel), math.cos(rel),
+                              min(gd, 1.0)], dtype=np.float32)
+    return obs
+
+
+def policy_goal_dist():
+    """Distance (m) from the rover's pose to the goal, or None."""
+    with POLICY_LOCK:
+        gx = POLICY["goal_x"]
+        gy = POLICY["goal_y"]
+    if gx is None or gy is None:
+        return None
+    with POSE_LOCK:
+        px, py = POSE["x"], POSE["y"]
+    return math.hypot(gx - px, gy - py)
+
+
+def policy_set_status(text):
+    with POLICY_LOCK:
+        POLICY["status"] = text
+
+
+def policy_stop(reason):
+    """Stop policy mode (and the motors)."""
+    with POLICY_LOCK:
+        was_active = POLICY["active"]
+        POLICY["active"] = False
+        POLICY["status"] = reason
+    if was_active:
+        apply_drive(0, 0)
+
+
+def tour_goal_direction():
+    """Pick the tour direction from the full LD19 scan: the
+    direction whose ±20° arc has the largest minimum distance —
+    the widest open corridor. Returns (angle_deg, min_dist_m),
+    angle clockwise from the rover's front, or None if the LD19
+    is offline/stale."""
+    with LD19_LOCK:
+        if not LD19["online"] or time.time() - LD19["updated"] > 1.0:
+            return None
+        bins = list(LD19["bins"])
+    best_ang = None
+    best_min = -1.0
+    half = 20
+    for c in range(0, 360, 5):
+        ds = [bins[(c + k) % 360] for k in range(-half, half + 1)]
+        ds = [d for d in ds if d is not None]
+        m = min(ds) if ds else 12.0
+        if m > best_min:
+            best_min = m
+            best_ang = c
+    if best_ang is None:
+        return None
+    return (best_ang, best_min)
+
+
+def tour_pick_goal():
+    """Set the policy goal to a virtual tour target: a point out
+    in the most open direction from the LD19 scan. Returns True
+    if a goal was set, False if the LD19 has no answer."""
+    res = tour_goal_direction()
+    if res is None:
+        return False
+    ang_deg, min_dist = res
+    # Goal this far out, inside the clear corridor (not at the
+    # wall); never closer than 0.5 m so it stays ahead of the rover.
+    gd = min(min_dist * 0.8, TOUR_GOAL_DIST_M)
+    if gd < 0.5:
+        gd = 0.5
+    with POSE_LOCK:
+        px, py, ph = POSE["x"], POSE["y"], POSE["heading"]
+    # ang is clockwise from the rover's front; the front points
+    # along the heading, so the absolute bearing is heading + ang.
+    bearing = math.radians((ph + ang_deg) % 360.0)
+    gx = px + gd * math.sin(bearing)
+    gy = py + gd * math.cos(bearing)
+    with POLICY_LOCK:
+        POLICY["goal_x"] = gx
+        POLICY["goal_y"] = gy
+        POLICY["goal_virtual"] = True
+    with TOUR_LOCK:
+        TOUR["goal_x"] = gx
+        TOUR["goal_y"] = gy
+    return True
+
+
+def tour_set_status(text):
+    with TOUR_LOCK:
+        TOUR["status"] = text
+
+
+def tour_stop(reason):
+    """Stop tour mode (and the policy + motors). Clears the policy
+    goal only if it's a virtual tour goal — a fixed goal the user
+    tapped stays, so switching from tour to "Go to goal" keeps it."""
+    with TOUR_LOCK:
+        was_active = TOUR["active"]
+        TOUR["active"] = False
+        TOUR["status"] = reason
+        TOUR["goal_x"] = None
+        TOUR["goal_y"] = None
+    with POLICY_LOCK:
+        POLICY["tour"] = False
+        if POLICY["goal_virtual"]:
+            POLICY["goal_x"] = None
+            POLICY["goal_y"] = None
+            POLICY["goal_virtual"] = False
+    policy_stop(reason)
+
+
+def policy_loop():
+    """Run the trained policy at 10 Hz while active. Each step:
+    build the observation, run the ONNX model, drive the action.
+    The both-LiDAR safety check runs first and overrides the
+    policy when blocked (minimum-angle escape turn); both LiDARs
+    offline means stop and wait. Reaching the
+    goal (<= 0.25 m) stops the rover and ends the run — except in
+    tour mode, where the goal is virtual and keeps moving: reaching
+    it just picks a new one, so the rover never stops. Stops if
+    the page heartbeat is gone for 3 s."""
+    blocked_since = None
+    escape_dir = "left"
+    escape_angle = 0
+    while True:
+        with POLICY_LOCK:
+            active = POLICY["active"]
+            last_ping = POLICY["last_ping"]
+            tour_on = POLICY["tour"]
+        if not active:
+            time.sleep(0.1)
+            continue
+        if time.time() - last_ping > 3.0:
+            if tour_on:
+                tour_stop("page gone — tour stopped")
+            else:
+                policy_stop("page gone — policy stopped")
+            time.sleep(0.1)
+            continue
+        # Tour mode: the goal is virtual and moves. Repick it every
+        # second, or when the rover gets close to it, so it stays
+        # ahead and the rover never "arrives".
+        if tour_on:
+            now = time.time()
+            with TOUR_LOCK:
+                repick_at = TOUR["repick_at"]
+            gd = policy_goal_dist()
+            if now >= repick_at or (gd is not None
+                                    and gd < TOUR_GOAL_CLOSE_M):
+                if tour_pick_goal():
+                    with TOUR_LOCK:
+                        TOUR["repick_at"] = now + TOUR_REPICK_S
+        # Goal reached?
+        gd = policy_goal_dist()
+        if gd is not None and gd <= POLICY_GOAL_REACHED_M:
+            if tour_on:
+                # Virtual goal reached — pick a new one, keep going.
+                tour_pick_goal()
+                with TOUR_LOCK:
+                    TOUR["repick_at"] = time.time() + TOUR_REPICK_S
+                time.sleep(0.1)
+                continue
+            policy_stop("goal reached 🎯")
+            time.sleep(0.1)
+            continue
+        # Need a fresh LD19 scan for the observation; never drive
+        # blind on a stale scan.
+        obs = policy_observation()
+        if obs is None:
+            apply_drive(0, 0)
+            policy_set_status("LD19 offline — stopped")
+            time.sleep(0.1)
+            continue
+        # --- safety override (both-LiDAR rule) ---
+        ld = ld19_forward_min()
+        tf = lidar_reading()
+        if ld is None and tf is None:
+            apply_drive(0, 0)
+            policy_set_status("both lidars offline — stopped")
+            time.sleep(0.1)
+            continue
+        stop_m = get_mindist()
+        ld_m = None
+        if ld is not None and ld[0] != float("inf"):
+            ld_m = ld[0]
+        tf_m = None
+        tf_bad = False
+        if tf is not None:
+            tf_m, tf_strength = tf
+            if tf_m is not None and not (
+                    0.0 <= tf_m <= 8.0 and 0 < tf_strength < 65535):
+                tf_bad = True
+                tf_m = None
+        if tf_bad and ld is None:
+            apply_drive(0, 0)
+            policy_set_status("lidar bad reading — stopped")
+            time.sleep(0.1)
+            continue
+        cands = []
+        if ld_m is not None:
+            cands.append(ld_m)
+        if tf_m is not None:
+            cands.append(tf_m)
+        blocked = bool(cands) and min(cands) < stop_m
+        if blocked:
+            if blocked_since is None:
+                blocked_since = time.time()
+                esc = ld19_escape_direction(stop_m)
+                if esc is not None:
+                    escape_dir, escape_angle = esc
+                else:
+                    escape_dir, escape_angle = "left", 0
+            policy_set_status(
+                f"policy blocked — turning {escape_dir} {escape_angle}°")
+            apply_command(escape_dir, 100)
+            time.sleep(POLICY_DT)
+            continue
+        blocked_since = None
+        escape_dir = "left"
+        escape_angle = 0
+        # --- policy action ---
+        with POLICY_LOCK:
+            sess = POLICY["model"]
+        if sess is None:
+            apply_drive(0, 0)
+            policy_set_status("model not loaded — stopped")
+            time.sleep(0.1)
+            continue
+        try:
+            action = int(sess.run(None, {"observation": obs[None, :]})[0][0])
+        except Exception as e:
+            apply_drive(0, 0)
+            policy_set_status(f"model error — stopped ({e})")
+            time.sleep(0.1)
+            continue
+        cmds = ("forward", "left", "right", "stop")
+        cmd = cmds[action] if 0 <= action <= 3 else "stop"
+        if gd is not None:
+            policy_set_status(f"policy: {cmd} — goal {gd:.2f} m away")
+        else:
+            policy_set_status(f"policy: {cmd}")
+        apply_command(cmd, 100)
+        time.sleep(POLICY_DT)
 
 
 def spin_180():
@@ -2000,15 +2473,20 @@ def spin_180():
             return False
         SPIN["active"] = True
         SPIN["cancel"] = False
-    # A manual move: stop auto / avoid first, like a D-pad press does.
+    # A manual move: stop auto / tour / policy first, like a D-pad
+    # press does.
     with AUTO_LOCK:
         auto_was_on = AUTO["active"]
     if auto_was_on:
         auto_stop("spin 180")
-    with AVOID_LOCK:
-        avoid_was_on = AVOID["active"]
-    if avoid_was_on:
-        avoid_stop("spin 180")
+    with TOUR_LOCK:
+        tour_was_on = TOUR["active"]
+    if tour_was_on:
+        tour_stop("spin 180")
+    with POLICY_LOCK:
+        policy_was_on = POLICY["active"]
+    if policy_was_on:
+        policy_stop("spin 180")
     print("spin: 180° turn starting", flush=True)
     apply_command("right", 100)  # spin in place
     start = time.time()
@@ -2194,10 +2672,14 @@ class Handler(BaseHTTPRequestHandler):
                 if not MOTORS_OK:
                     self._reply("motors unavailable — check HAT/I2C on the Pi")
                     return
-                with AVOID_LOCK:
-                    avoid_was_on = AVOID["active"]
-                if avoid_was_on:
-                    avoid_stop("auto on")
+                with POLICY_LOCK:
+                    policy_was_on = POLICY["active"]
+                if policy_was_on:
+                    policy_stop("auto on")
+                with TOUR_LOCK:
+                    tour_was_on = TOUR["active"]
+                if tour_was_on:
+                    tour_stop("auto on")
                 with AUTO_LOCK:
                     if AUTO["active"]:
                         AUTO["last_ping"] = time.time()
@@ -2226,43 +2708,134 @@ class Handler(BaseHTTPRequestHandler):
             else:
                 self.send_error(404)
             return
-        if self.path.startswith("/avoid/mindist"):
-            # ?m=<meters> — pick the minimum avoidance distance.
+        if self.path.startswith("/safety/mindist"):
+            # ?m=<meters> — pick the minimum safety distance (the
+            # both-LiDAR override threshold for tour and go-to-goal).
             q = parse_qs(urlparse(self.path).query)
             try:
                 m = float(q.get("m", [""])[0])
             except ValueError:
                 self._reply("bad distance", code=400)
                 return
-            self._reply(f"min avoid distance {set_mindist(m):.2f} m")
+            self._reply(f"min safety distance {set_mindist(m):.2f} m")
             return
-        if self.path.startswith("/avoid/"):
+        if self.path.startswith("/policy/"):
+            action = self.path.split("/")[2].split("?")[0]
+            if action == "goal":
+                # ?x=<m>&y=<m> — set (or retarget) the goal, from a
+                # tap on the map. Works whether the policy is on or
+                # off; when on, the rover retargets live.
+                q = parse_qs(urlparse(self.path).query)
+                try:
+                    gx = float(q.get("x", [""])[0])
+                    gy = float(q.get("y", [""])[0])
+                except ValueError:
+                    self._reply("bad goal", code=400)
+                    return
+                with POLICY_LOCK:
+                    POLICY["goal_x"] = gx
+                    POLICY["goal_y"] = gy
+                    POLICY["goal_virtual"] = False
+                self._reply(f"goal set ({gx:.2f}, {gy:.2f}) m")
+            elif action == "on":
+                if not MOTORS_OK:
+                    self._reply("motors unavailable — check HAT/I2C on the Pi")
+                    return
+                # Turn the other modes off first — the tour in
+                # particular clears its virtual goal, so the check
+                # below only sees a goal the user actually tapped.
+                with AUTO_LOCK:
+                    auto_was_on = AUTO["active"]
+                if auto_was_on:
+                    auto_stop("policy on")
+                with TOUR_LOCK:
+                    tour_was_on = TOUR["active"]
+                if tour_was_on:
+                    tour_stop("policy on")
+                with POLICY_LOCK:
+                    has_goal = POLICY["goal_x"] is not None
+                if not has_goal:
+                    self._reply("tap the map to set a goal first", code=400)
+                    return
+                if not policy_load_model():
+                    with POLICY_LOCK:
+                        err = POLICY["model_error"]
+                    self._reply(err, code=503)
+                    return
+                with POLICY_LOCK:
+                    if POLICY["active"]:
+                        POLICY["last_ping"] = time.time()
+                        self._reply(POLICY["status"])
+                        return
+                    POLICY["active"] = True
+                    POLICY["last_ping"] = time.time()
+                    POLICY["status"] = "driving to goal…"
+                self._reply("policy on — driving to goal")
+            elif action == "off":
+                policy_stop("policy off")
+                self._reply("policy off")
+            elif action == "ping":
+                with POLICY_LOCK:
+                    if POLICY["active"]:
+                        POLICY["last_ping"] = time.time()
+                    self._reply(POLICY["status"])
+            else:
+                self.send_error(404)
+            return
+        if self.path.startswith("/tour/"):
             action = self.path.split("/")[2].split("?")[0]
             if action == "on":
                 if not MOTORS_OK:
                     self._reply("motors unavailable — check HAT/I2C on the Pi")
                     return
+                if not policy_load_model():
+                    with POLICY_LOCK:
+                        err = POLICY["model_error"]
+                    self._reply(err, code=503)
+                    return
                 with AUTO_LOCK:
                     auto_was_on = AUTO["active"]
                 if auto_was_on:
-                    auto_stop("avoid on")
-                with AVOID_LOCK:
-                    if AVOID["active"]:
-                        AVOID["last_ping"] = time.time()
-                        self._reply(AVOID["status"])
+                    auto_stop("tour on")
+                # Pick the first virtual goal now; if the LD19 has
+                # no answer the tour can't run.
+                if not tour_pick_goal():
+                    self._reply("LD19 offline — tour needs the LiDAR",
+                                code=503)
+                    return
+                with TOUR_LOCK:
+                    if TOUR["active"]:
+                        TOUR["last_ping"] = time.time()
+                        self._reply(TOUR["status"])
                         return
-                    AVOID["active"] = True
-                    AVOID["last_ping"] = time.time()
-                    AVOID["status"] = "scanning…"
-                self._reply("obstacle avoid on")
+                    TOUR["active"] = True
+                    TOUR["last_ping"] = time.time()
+                    TOUR["repick_at"] = time.time() + TOUR_REPICK_S
+                    TOUR["status"] = "touring…"
+                with POLICY_LOCK:
+                    POLICY["tour"] = True
+                    POLICY["active"] = True
+                    POLICY["last_ping"] = time.time()
+                    POLICY["status"] = "touring…"
+                self._reply("tour on — following open space")
             elif action == "off":
-                avoid_stop("avoid off")
-                self._reply("avoid off")
+                tour_stop("tour off")
+                self._reply("tour off")
             elif action == "ping":
-                with AVOID_LOCK:
-                    if AVOID["active"]:
-                        AVOID["last_ping"] = time.time()
-                    self._reply(AVOID["status"])
+                # Forward the heartbeat to the policy loop too — the
+                # page pings /tour/ping while touring, not /policy/ping.
+                # Return the policy's live status (what the rover is
+                # doing) while touring, else the tour's own status.
+                with TOUR_LOCK:
+                    if TOUR["active"]:
+                        TOUR["last_ping"] = time.time()
+                    tour_active = TOUR["active"]
+                    tour_status = TOUR["status"]
+                with POLICY_LOCK:
+                    if POLICY["active"]:
+                        POLICY["last_ping"] = time.time()
+                    pol_status = POLICY["status"]
+                self._reply(pol_status if tour_active else tour_status)
             else:
                 self.send_error(404)
             return
@@ -2297,16 +2870,20 @@ class Handler(BaseHTTPRequestHandler):
         # Any manual button press cancels a 180° spin mid-turn.
         with SPIN_LOCK:
             SPIN["cancel"] = True
-        # Any manual button press takes over from auto / avoid
-        # instantly.
+        # Any manual button press takes over from auto / tour /
+        # policy instantly.
         with AUTO_LOCK:
             auto_was_on = AUTO["active"]
         if auto_was_on:
             auto_stop("manual override")
-        with AVOID_LOCK:
-            avoid_was_on = AVOID["active"]
-        if avoid_was_on:
-            avoid_stop("manual override")
+        with POLICY_LOCK:
+            policy_was_on = POLICY["active"]
+        if policy_was_on:
+            policy_stop("manual override")
+        with TOUR_LOCK:
+            tour_was_on = TOUR["active"]
+        if tour_was_on:
+            tour_stop("manual override")
         # Manual driving invalidates the radar trail's heading
         # estimate — drop it so the picture restarts clean.
         with LIDAR_LOCK:
@@ -2319,6 +2896,24 @@ class Handler(BaseHTTPRequestHandler):
                 pass
         if not MOTORS_OK:
             msg = "motors unavailable — check HAT/I2C on the Pi"
+        elif cmd in ("forward", "back"):
+            # Manual safety: slow down as an obstacle approaches,
+            # stop before hitting it. The factor is re-checked on
+            # every repeat (the page re-sends a held button every
+            # 500 ms) and enforced between repeats by the
+            # manual_safety_loop thread.
+            factor = manual_speed_factor(cmd)
+            if factor <= 0:
+                apply_command("stop", 100)
+                msg = f"{cmd} blocked — obstacle too close"
+            elif apply_command(cmd, int(int(speed) * factor)):
+                msg = f"{cmd} @ {int(int(speed) * factor)}%"
+                # Holding a button = repeated commands aren't sent, so refresh
+                # the watchdog deadline while the command is active.
+                with LOCK:
+                    STATE["last_cmd_time"] = time.time()
+            else:
+                msg = f"unknown command: {cmd}"
         elif apply_command(cmd, int(speed)):
             msg = f"{cmd} @ {int(speed)}%"
             # Holding a button = repeated commands aren't sent, so refresh
@@ -2337,7 +2932,8 @@ if __name__ == "__main__":
     threading.Thread(target=pose_loop, daemon=True).start()
     threading.Thread(target=map_update_loop, daemon=True).start()
     threading.Thread(target=auto_loop, daemon=True).start()
-    threading.Thread(target=avoid_loop, daemon=True).start()
+    threading.Thread(target=policy_loop, daemon=True).start()
+    threading.Thread(target=manual_safety_loop, daemon=True).start()
     server = ThreadingHTTPServer(("0.0.0.0", 8001), Handler)
     print("Rover drive page at http://localhost:8001  (Ctrl+C to stop)",
           flush=True)

@@ -195,7 +195,11 @@ wheels backward + right wheels forward (turn left), ▶ is the reverse
 (turn right). **Hold** a button to move, **let go to stop.** That's
 how a 4WD car turns, there's no steering wheel. On a computer the
 keyboard arrow keys drive the same way: hold an arrow to move, let
-go to stop. The button in the center of the D-pad (↻ 180°) spins
+go to stop. **Manual safety:** driving forward or back slows down
+as an obstacle approaches (below 1.0 m) and stops before hitting it
+(at 0.30 m) — forward uses the LD19 forward arc + TF-Luna, reverse
+uses the LD19 rear arc. Turns (spinning in place) are not limited.
+If both LiDARs are offline the rover drives unprotected, as before. The button in the center of the D-pad (↻ 180°) spins
 the rover a half-turn in place — tap it once and it turns around by
 itself. Let go of the D-pad first, then tap it; any D-pad button
 cancels the spin mid-turn. The spin is timed, not measured: if it
@@ -316,45 +320,39 @@ whether the tape is in view at all.
 
 ---
 
-## Phase 8 — Obstacle avoid: the rover explores on its own
+## Phase 8 — Safety: the both-LiDAR override (was "Obstacle avoid")
 
-The rover can wander a room on its own and steer around obstacles —
-no remote control needed while it's running. Two LiDARs watch the
-front: the LD19's forward arc (±30°) covers the surroundings, and
-the TF-Luna's low beam (a few cm up) covers the low front. If
-EITHER reports an obstacle, the rover stops and turns. The camera
-plays no part in this mode.
+**Consolidated Nov 24:** the standalone rule-based Obstacle Avoid
+mode is gone — Tour (Phase 12) is the rover's only explore mode
+now. The rule-based logic lives on as the safety override that
+sits underneath the learned policy (Tour and Go to goal), not as
+a mode of its own. What follows describes that override.
 
-**How it works:** it drives continuously — no stopping to scan — and
-checks the forward distance from both LiDARs about 10 times a
-second. Clear (at or beyond the minimum distance, or nothing in
-range) it keeps driving forward; blocked (under the minimum
-distance, from either sensor) it stops and turns in place until
-the front opens up. It never backs up — the LD19 sees 360
-degrees, so spinning finds the opening. **The turn side is the
-minimum-angle escape:** when it first gets blocked it scans the
-full 360-degree LD19 sweep for the nearest clear direction and
-turns that way (left or right, whichever is the smaller turn), so
-it gets out of a corner instead of circling it — turning left
-only as a fallback if the LD19 has no answer. If it's blocked on
-all sides for 10 seconds straight (no opening after several full
-spins) it stops and says "stuck". Only when BOTH LiDARs are
-offline (adapters unplugged, pyserial missing, stale readings)
-does the rover stop and wait — it never drives blind.
+Two LiDARs watch the front: the LD19's forward arc (±30°)
+covers the surroundings, and the TF-Luna's low beam (a few cm
+up) covers the low front. If EITHER reports an obstacle under
+the picked minimum distance, the rover stops following the
+policy and turns away instead. The camera plays no part in this.
 
-**Run it:** on the drive page, tap **🚧 Obstacle Avoid**. The status
-line tells you what it's doing and which sensor saw it:
-`ld19 1.24m — driving`, `tf 0.30m — turning right 86°`,
-`ld19 0.38m · tf 0.30m — turning left 45°`, or
-`stuck — blocked on all sides`. Tap the button again to
-stop, or tap any D-pad button — manual control takes over
-instantly. It won't run at the same time as Line Follow; turning
-one on turns the other off.
+**How it works:** every policy step (~10 Hz) checks the forward
+distance from both LiDARs. Clear (at or beyond the minimum
+distance, or nothing in range) the policy drives; blocked (under
+the minimum distance, from either sensor) the rover stops and
+turns in place until the front opens up. It never backs up — the
+LD19 sees 360 degrees, so spinning finds the opening. **The turn
+side is the minimum-angle escape:** when it first gets blocked it
+scans the full 360-degree LD19 sweep for the nearest clear
+direction and turns that way (left or right, whichever is the
+smaller turn), so it gets out of a corner instead of circling
+it — turning left only as a fallback if the LD19 has no answer.
+Only when BOTH LiDARs are offline (adapters unplugged, pyserial
+missing, stale readings) does the rover stop and wait — it never
+drives blind.
 
-**Pick the distance:** the **Min dist** slider under the Obstacle
-Avoid button sets the minimum avoidance distance (0.30–2.00 m,
-0.50 m default). The radar shows it as a dashed red ring. The
-picked value resets to 0.50 m when the server restarts.
+**Pick the distance:** the **Min dist** slider on the drive page
+sets the minimum safety distance (0.30–2.00 m, 0.50 m default).
+The radar shows it as a dashed red ring. The picked value resets
+to 0.50 m when the server restarts.
 
 **Seeing what the LiDAR sees:** the video shows a cyan marker at
 the center — that's where the beam points — labeled with the
@@ -400,11 +398,11 @@ The youyeetoo FHL-LD19 kit is the mapping sensor: it spins ~10
 times a second and measures a full 360-degree scan (12 m range).
 The drive page's radar now draws that scan as cyan dots around
 the rover, alongside the TF-Luna's green forward dot and yellow
-trail. Obstacle avoid uses both sensors — the LD19's forward arc
+trail. The safety override uses both sensors — the LD19's forward arc
 (±30°) watches the surroundings and the TF-Luna watches the low
 front; either one under the minimum distance stops the rover and
-turns it left, and it spins until the front opens up instead of
-backing up. The map (SLAM) is built — see Phase 10 below.
+turns it away (minimum-angle escape), and it spins until the front
+opens up instead of backing up. The map (SLAM) is built — see Phase 10 below.
 
 **Set up:** plug the LD19 kit's USB adapter into a Pi USB port.
 The server auto-detects which port is the LD19 by its data
@@ -481,6 +479,86 @@ is a compass bearing, clockwise-positive (0 = north, 90 = east),
 so a left turn *decreases* it; the radar trail's x-sign was
 flipped to match. Verified by driving a square in simulation —
 the map now shows clean walls instead of a blob.
+
+---
+
+## Phase 11 — Go to goal: the learned policy drives (Nov 24)
+
+The policy Walter trained on his Mac (PPO, 500k steps, 87% success
+in simulation) now runs on the Pi. **How it works:** the Pi loads
+`rover_policy.onnx` with ONNX Runtime and runs it at 10 Hz — the
+same step rate it was trained at. Each step it builds the exact
+27-number observation the training used: 24 LD19 sectors (min
+distance per 15° sector, /12 m) + goal bearing (sin, cos) + goal
+distance (/5 m). The model returns one action — forward, left,
+right, or stop — and the rover drives it. The rover's pose comes
+from the map (Phase 10), so the goal is a point on the map.
+
+**Use it:** drive the rover around first so the map fills in
+(the policy needs the pose, and the pose needs walls to match
+against). Then tap **🗺 Map**, tap the map where you want it to
+go (a red marker appears), and tap **🤖 Go to goal**. The rover
+drives itself there and stops within 0.25 m, reporting "goal
+reached". Tap the map again while it's running to retarget it.
+Any D-pad press takes over instantly, and it stops if the page
+loses contact for 3 seconds.
+
+**Safety:** the same both-LiDAR rule as obstacle avoid overrides
+the policy — if either the LD19 forward arc or the TF-Luna sees
+an obstacle under the picked minimum distance, the rover turns
+(minimum-angle escape) instead of following the policy, and it
+stops if both LiDARs are offline. The policy was trained to avoid
+obstacles itself; the override is a backstop for the sim-to-real
+gap, not the navigator.
+
+**Setup (once, on the Pi):** the model file and ONNX Runtime are
+not in the server download — they go on the Pi separately.
+Copy the trained model from the Mac:
+`scp runs/v1/rover_policy.onnx wxiao@192.168.86.33:~/pi-monitoring-rover/`
+then install the runtime on the Pi:
+`pip install --break-system-packages onnxruntime`
+If "Go to goal" says the file is missing or the runtime is missing,
+that's the step to do — the button reports which one.
+
+**Honest limits:** the first real-room run may be clumsy — the
+sim-to-real gap is real (different friction, noisier LiDAR, pose
+drift). The policy is reactive (it re-plans every 0.1 s from the
+live scan), so small differences are fine, but if it wanders or
+hugs walls, the fix is more randomization in the sim and a
+retrain, not a different approach. Verified in simulation
+(`test_policy.py`, 19/19): the Pi's observation matches the
+training env exactly (max diff 0.0), the real ONNX model drives
+forward to a clear goal, the safety override turns instead of
+driving into a wall, and it stops at the goal and on a stale
+LiDAR.
+
+## Phase 12 — Tour: the same policy, no fixed goal (Nov 24)
+
+Tap **🗺️ Tour** and the rover explores the house on its own. It
+uses the exact same trained policy as Go to goal — no retraining,
+no new model file — but the goal is virtual: every second the rover
+aims a few metres out into the most open corridor the LD19 sees
+(the direction whose ±20° arc has the largest minimum distance),
+so the goal keeps moving as the rover moves and it never "arrives".
+It just follows open space through the house. It stops only when
+you tap Tour off, press the D-pad, or the page loses contact for
+3 seconds. Same both-LiDAR safety override as Go to goal.
+
+**Honest limit:** the tour chases open space, so it can wander
+back into a room it already visited — the policy only sees the
+LiDAR, not the map, so it doesn't remember where it's been. A
+dedicated explore policy (trained to reward new ground and
+penalize revisiting) would be needed for methodical coverage.
+Verified in simulation (`test_tour.py`, 26/26): the direction
+picker aims at open space, not walls; the virtual goal moves with
+the rover; the tour keeps driving and repicks instead of stopping
+at a goal; the /tour/ endpoints work; Go to goal turns the tour
+off and keeps a fixed goal the user tapped (a virtual goal is
+cleared, a tapped goal is not). **Consolidated Nov 24:** Tour is
+now the rover's only explore mode — the old rule-based Obstacle
+Avoid was folded into it (its logic survives as the Phase 8
+safety override). The /tour/ endpoints and the Min dist slider
+(now under /safety/mindist) are unchanged.
 
 ---
 

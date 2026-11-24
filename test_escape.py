@@ -6,7 +6,8 @@ turning left and circling a corner.
 2. Mirror corner (wall ahead + right, open left) -> turns LEFT.
 3. Surrounded (no clear direction) -> None.
 4. LD19 offline -> None.
-5. avoid_loop in a corner turns RIGHT (not left) and drives out.
+5. Tour mode (policy safety override) in a corner turns RIGHT
+   (not left) and drives out.
 """
 import importlib.util
 import math
@@ -104,13 +105,22 @@ with rover.LD19_LOCK:
 esc = rover.ld19_escape_direction(STOP_M)
 check("LD19 offline -> None", esc is None, f"got {esc}")
 
-# --- 5. avoid_loop in a corner turns RIGHT and drives out ------------------
+# --- 5. Tour mode (policy safety override) in a corner turns RIGHT ---
 # Rover at (-1.5, 1.1) facing north, in the northwest corner.
 # The north wall blocks the front; the west wall blocks the left;
-# the east is open. Run the real avoid_loop with a simulated scan
-# that follows the rover's pose, and check it turns right (not
-# left) and then drives forward away from the corner.
+# the east is open. Run the real policy_loop in tour mode with a
+# simulated scan that follows the rover's pose, and check the
+# safety override turns right (not left) and then drives forward
+# away from the corner. (The old rule-based avoid_loop is gone —
+# tour is the explore mode now; the escape lives in the policy's
+# safety override.)
 rover.map_clear()
+# The policy needs the real smoke model + motors pretended present.
+rover.POLICY_ONNX_PATH = ("/home/hatch/workspace/goals/"
+    "mobile-pi-monitoring-rover/files/rl_rover/runs/smoke/"
+    "rover_policy.onnx")
+rover.MOTORS_OK = True
+assert rover.policy_load_model(), rover.POLICY.get("model_error", "")
 # Mock the drive calls to record them (and let the real ones set
 # STATE so pose_loop integrates).
 calls = []
@@ -124,7 +134,7 @@ def rec_cmd(c, s=100):
     return orig_cmd(c, s)
 rover.apply_drive = rec_drive
 rover.apply_command = rec_cmd
-rover.avoid_set_status = lambda s: None
+rover.policy_set_status = lambda s: None
 # Start pose_loop so the pose integrates from the throttles.
 t_pose = threading.Thread(target=rover.pose_loop, daemon=True)
 t_pose.start()
@@ -155,31 +165,41 @@ def scan_thread():
         time.sleep(0.05)
 st = threading.Thread(target=scan_thread, daemon=True)
 st.start()
-with rover.AVOID_LOCK:
-    rover.AVOID["active"] = True
-    rover.AVOID["last_ping"] = time.time() + 100
-    rover.AVOID["min_m"] = STOP_M
-t_avoid = threading.Thread(target=rover.avoid_loop, daemon=True)
-t_avoid.start()
+# Start tour mode the way /tour/on does.
+rover.tour_pick_goal()
+with rover.TOUR_LOCK:
+    rover.TOUR["active"] = True
+    rover.TOUR["last_ping"] = time.time() + 100
+    rover.TOUR["repick_at"] = time.time() + rover.TOUR_REPICK_S
+with rover.POLICY_LOCK:
+    rover.POLICY["tour"] = True
+    rover.POLICY["active"] = True
+    rover.POLICY["last_ping"] = time.time() + 100
+t_pol = threading.Thread(target=rover.policy_loop, daemon=True)
+t_pol.start()
 time.sleep(3.0)
-with rover.AVOID_LOCK:
-    rover.AVOID["active"] = False
+with rover.TOUR_LOCK:
+    rover.TOUR["active"] = False
+with rover.POLICY_LOCK:
+    rover.POLICY["active"] = False
+    rover.POLICY["tour"] = False
 stop_scan.set()
 time.sleep(0.3)
 rover.apply_drive = orig_drive
 rover.apply_command = orig_cmd
-# Did it turn right (not left)?
+# Did it turn right (not left)? The policy drives via apply_command
+# (not apply_drive), so "forward" is a cmd, not a drive call.
 right_cmds = [c for c in calls if c[0] == "cmd" and c[1] == "right"]
 left_cmds = [c for c in calls if c[0] == "cmd" and c[1] == "left"]
-fwd = [c for c in calls if c[0] == "drive" and c[1] < 0 and c[2] < 0]
-check("avoid in corner turns RIGHT (not left)",
+fwd = [c for c in calls if c[0] == "cmd" and c[1] == "forward"]
+check("tour in corner turns RIGHT (not left)",
       len(right_cmds) > 0 and len(left_cmds) == 0,
       f"right={len(right_cmds)}, left={len(left_cmds)}")
-check("avoid in corner then drives forward",
+check("tour in corner then drives forward",
       len(fwd) > 0, f"forward drive calls={len(fwd)}")
 with rover.POSE_LOCK:
     ex, ey, eh = rover.POSE["x"], rover.POSE["y"], rover.POSE["heading"]
-check("avoid in corner moves the rover away (east / +x)",
+check("tour in corner moves the rover away (east / +x)",
       ex > -1.5 + 0.1, f"pose=({ex:.2f}, {ey:.2f}, {eh:.0f})")
 
 print()

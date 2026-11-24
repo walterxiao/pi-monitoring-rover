@@ -1,0 +1,14 @@
+# RL training dependencies (run on the Mac, not the Pi).
+# Install:  python3 -m venv .venv && source .venv/bin/activate
+#           pip install -r requirements.txt
+gymnasium>=1.0
+stable-baselines3>=2.0
+torch>=2.0
+onnx>=1.15
+# onnxruntime is OPTIONAL on the Mac: it is only used for the ONNX
+# sanity check at the end of train.py, and it has no wheel for
+# Python 3.15 yet. Training and the ONNX export do not need it.
+# Install it only if your Python has a wheel for it:
+#   pip install onnxruntime
+matplotlib>=3.8
+numpy>=1.26
