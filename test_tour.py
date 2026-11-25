@@ -87,8 +87,8 @@ check("LD19 offline -> None", rs.tour_goal_direction() is None)
 with rs.LD19_LOCK:
     rs.LD19["online"] = True
 
-# --- 2. Goal picking ------------------------------------------------------
-print("== tour_pick_goal ==")
+# --- 2. Goal picking: straight ahead --------------------------------------
+print("== tour_pick_goal (straight ahead) ==")
 set_ld19(bins)
 set_pose(0.0, 0.0, 0.0)
 check("picks a goal", rs.tour_pick_goal())
@@ -98,9 +98,11 @@ with rs.POLICY_LOCK:
 gd = float(np.hypot(gx, gy))
 check(f"goal is 0.5-2.5 m out (got {gd:.2f} m)", 0.5 <= gd <= 2.5,
       f"goal=({gx:.2f},{gy:.2f})")
-# The goal should be on the open side (positive x = right of the
-# rover when heading north, since the wall is ahead/left).
-check("goal is toward the open side (x > 0)", gx > 0,
+# The goal is STRAIGHT AHEAD (x ~ 0) even though the right side is
+# more open — the rover drives straight until a wall, it does not
+# steer toward the open corridor.
+check("goal is straight ahead, not toward the open side (x ~ 0)",
+      abs(gx) < 0.05 and gy > 0,
       f"goal=({gx:.2f},{gy:.2f})")
 check("virtual goal is flagged virtual", virt)
 # From a different pose the goal moves with the rover.
@@ -111,6 +113,53 @@ with rs.POLICY_LOCK:
 check("goal moves with the rover",
       abs(gx2 - gx) > 0.1 or abs(gy2 - gy) > 0.1,
       f"({gx:.2f},{gy:.2f}) -> ({gx2:.2f},{gy2:.2f})")
+# The new goal is straight ahead of the new pose too.
+check("repicked goal is straight ahead of the new pose",
+      abs(gx2 - 1.0) < 0.05 and gy2 > 0.5,
+      f"goal=({gx2:.2f},{gy2:.2f})")
+
+# --- 2b. tour_goal_blocked: fixed-point goal validity ----------------------
+print("== tour_goal_blocked ==")
+# Start fresh, pick a goal straight ahead in open space.
+with rs.POLICY_LOCK:
+    rs.POLICY["goal_x"] = None
+    rs.POLICY["goal_y"] = None
+    rs.POLICY["goal_virtual"] = False
+set_ld19([12.0] * 360)
+set_pose(0.0, 0.0, 0.0)
+check("pick a goal straight ahead", rs.tour_pick_goal())
+with rs.POLICY_LOCK:
+    gx0, gy0 = rs.POLICY["goal_x"], rs.POLICY["goal_y"]
+check("goal is straight ahead",
+      abs(gx0) < 0.05 and gy0 > 0, f"goal=({gx0:.2f},{gy0:.2f})")
+# Open space: nothing between the rover and the goal.
+check("open space -> not blocked", not rs.tour_goal_blocked())
+# A wall at 1.5 m sits between the rover and the 2.5 m goal.
+bins = [12.0] * 360
+for b in list(range(345, 360)) + list(range(0, 16)):
+    bins[b] = 1.5
+set_ld19(bins)
+check("wall before the goal -> blocked", rs.tour_goal_blocked())
+# A wall BEYOND the goal (3.0 m, goal at 2.5 m) does not block it.
+bins = [12.0] * 360
+for b in list(range(345, 360)) + list(range(0, 16)):
+    bins[b] = 3.0
+set_ld19(bins)
+check("wall beyond the goal -> not blocked",
+      not rs.tour_goal_blocked())
+# A wall off to the side (not in the goal's arc) does not block it.
+bins = [12.0] * 360
+for b in range(80, 101):
+    bins[b] = 0.5
+set_ld19(bins)
+check("wall off to the side -> not blocked",
+      not rs.tour_goal_blocked())
+# No virtual goal -> not blocked (and no crash).
+with rs.POLICY_LOCK:
+    rs.POLICY["goal_x"] = None
+    rs.POLICY["goal_y"] = None
+    rs.POLICY["goal_virtual"] = False
+check("no goal -> not blocked", not rs.tour_goal_blocked())
 
 # --- 3. Tour keeps driving ------------------------------------------------
 print("== tour mode keeps driving (real ONNX) ==")
@@ -149,6 +198,8 @@ set_pose(0.0, 0.0, 0.0)
 
 # Start the tour the way /tour/on does.
 rs.tour_pick_goal()
+with rs.POLICY_LOCK:
+    goal0 = (rs.POLICY["goal_x"], rs.POLICY["goal_y"])
 with rs.TOUR_LOCK:
     rs.TOUR["active"] = True
     rs.TOUR["last_ping"] = time.time()
@@ -159,22 +210,22 @@ with rs.POLICY_LOCK:
     rs.POLICY["active"] = True
     rs.POLICY["last_ping"] = time.time()
     rs.POLICY["status"] = "touring…"
-repick_at0 = rs.TOUR["repick_at"]
 
 t = threading.Thread(target=rs.policy_loop, daemon=True)
 t.start()
-# Let it run ~3 s, advancing the pose toward the goal and keeping
-# the LD19 + heartbeat fresh. The virtual goal should be repicked
-# (repick_at moves forward) and the loop must stay active — it
-# never "arrives".
-repick_ats = [repick_at0]
-for _ in range(30):
+# Let it run ~1.5 s, advancing the pose toward the goal and keeping
+# the LD19 + heartbeat fresh. The rover drives straight: the goal
+# must stay STRAIGHT AHEAD of it (same x, since it heads north) the
+# whole time — it may legitimately repick when it arrives at the
+# goal, but the new goal is straight ahead too, never off to a
+# side. The loop must stay active.
+max_off_axis = 0.0
+for _ in range(15):
     time.sleep(0.1)
     with rs.LD19_LOCK:
         rs.LD19["updated"] = time.time()
     with rs.TOUR_LOCK:
         rs.TOUR["last_ping"] = time.time()
-        repick_ats.append(rs.TOUR["repick_at"])
     with rs.POLICY_LOCK:
         rs.POLICY["last_ping"] = time.time()
         active = rs.POLICY["active"]
@@ -189,18 +240,43 @@ for _ in range(30):
             d = float(np.hypot(dx, dy)) or 1.0
             rs.POSE["x"] += 0.03 * dx / d
             rs.POSE["y"] += 0.03 * dy / d
+    with rs.POLICY_LOCK:
+        with rs.POSE_LOCK:
+            off = abs(rs.POLICY["goal_x"] - rs.POSE["x"])
+        max_off_axis = max(max_off_axis, off)
+with rs.POLICY_LOCK:
+    goal1 = (rs.POLICY["goal_x"], rs.POLICY["goal_y"])
+drive_cmds = [c for c in cmds if c[0] == "cmd"]
+check("tour issues drive commands", len(drive_cmds) > 0,
+      f"cmds={cmds[:8]}")
+check("tour stays active (never 'arrives')", active, f"status={st}")
+check("goal stays STRAIGHT AHEAD while driving (never off to a side)",
+      max_off_axis < 0.05,
+      f"max off-axis {max_off_axis:.3f} m")
+# Now teleport the rover to within 0.5 m of the CURRENT goal
+# (simulating arrival) and let the loop run a little: it must
+# repick a new goal.
+with rs.POSE_LOCK:
+    rs.POSE["x"] = goal1[0]
+    rs.POSE["y"] = goal1[1] - 0.5
+for _ in range(10):
+    time.sleep(0.1)
+    with rs.LD19_LOCK:
+        rs.LD19["updated"] = time.time()
+    with rs.TOUR_LOCK:
+        rs.TOUR["last_ping"] = time.time()
+    with rs.POLICY_LOCK:
+        rs.POLICY["last_ping"] = time.time()
+with rs.POLICY_LOCK:
+    goal2 = (rs.POLICY["goal_x"], rs.POLICY["goal_y"])
+check("goal repicked on arrival (point changes)",
+      abs(goal2[0] - goal1[0]) > 0.05 or abs(goal2[1] - goal1[1]) > 0.05,
+      f"goal stayed {goal1}")
 with rs.TOUR_LOCK:
     rs.TOUR["active"] = False
 with rs.POLICY_LOCK:
     rs.POLICY["active"] = False
     rs.POLICY["tour"] = False
-drive_cmds = [c for c in cmds if c[0] == "cmd"]
-check("tour issues drive commands", len(drive_cmds) > 0,
-      f"cmds={cmds[:8]}")
-check("tour stays active (never 'arrives')", active, f"status={st}")
-check("virtual goal repicked (repick_at advances)",
-      max(repick_ats) > repick_at0 + 0.5,
-      f"repick_at range {min(repick_ats):.2f}-{max(repick_ats):.2f}")
 cmds.clear()
 rs.apply_command = orig_apply_command
 rs.apply_drive = orig_apply_drive

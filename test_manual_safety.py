@@ -3,13 +3,13 @@
 obstacle approaches and stops before hitting it.
 1. Far obstacle (>= 1.0 m) -> full speed (factor 1.0).
 2. Mid-range obstacle (0.65 m) -> half speed (factor ~0.5).
-3. Close obstacle (<= 0.30 m) -> stop (factor 0.0).
+3. Close obstacle (<= 0.25 m) -> stop (factor 0.0).
 4. Clear (no obstacle) -> full speed.
 5. Sensors offline -> full speed (drives unprotected, as before).
 6. Reverse: rear obstacle close -> stop; rear clear -> full speed.
 7. Turns are unscaled (factor 1.0 even with a wall ahead).
 8. End-to-end: manual_safety_loop caps a forward drive as a wall
-   approaches and stops it at 0.30 m.
+   approaches and stops it at 0.25 m.
 """
 import importlib.util
 import math
@@ -67,14 +67,14 @@ check("mid-range obstacle (0.65 m) -> ~half speed",
       0.4 < f < 0.6, f"got {f:.2f}")
 
 # --- 3. Close obstacle -> stop ---------------------------------------------
-set_sensors(fwd_ld19=0.25, tf=0.25)
-check("close obstacle (0.25 m) -> stop",
+set_sensors(fwd_ld19=0.20, tf=0.20)
+check("close obstacle (0.20 m) -> stop",
       rover.manual_speed_factor("forward") == 0.0,
       f"got {rover.manual_speed_factor('forward')}")
 
 # --- 3b. At exactly the stop distance -> stop ------------------------------
-set_sensors(fwd_ld19=0.30, tf=0.30)
-check("at stop distance (0.30 m) -> stop",
+set_sensors(fwd_ld19=0.25, tf=0.25)
+check("at stop distance (0.25 m) -> stop",
       rover.manual_speed_factor("forward") == 0.0,
       f"got {rover.manual_speed_factor('forward')}")
 
@@ -122,7 +122,7 @@ check("stop with wall ahead -> unscaled (1.0)",
 # --- 8. End-to-end: safety loop caps a forward drive ------------------------
 # Rover drives forward toward a wall. The wall starts 1.2 m away
 # and the rover approaches at 0.3 m/s. The safety loop should
-# slow it down and stop it before it gets within 0.30 m.
+# slow it down and stop it before it gets within 0.25 m.
 rover.MOTORS_OK = True
 orig_set_motors = rover.set_motors
 orig_stop_all = rover.stop_all
@@ -170,8 +170,8 @@ rover.stop_all = orig_stop_all
 check("safety loop stops the rover before it hits the wall",
       not final_moving and final_tl == 0.0,
       f"moving={final_moving}, throttle={final_tl}")
-check("safety loop stopped it at >= 0.30 m from the wall",
-      wall_dist >= 0.29,
+check("safety loop stopped it at >= 0.25 m from the wall",
+      wall_dist >= 0.24,
       f"final wall_dist={wall_dist:.2f} m")
 # It should have slowed down (not just run at full speed then
 # stopped): check that some applied throttle was < full speed.

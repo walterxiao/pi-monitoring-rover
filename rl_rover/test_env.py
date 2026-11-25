@@ -190,22 +190,23 @@ dist = env._scan()
 v_off = env._margin_violation(dist)
 check("off-center with margin on both sides -> violation 0",
       v_off == 0.0, f"v={v_off:.3f}")
-# Hugging the left wall (x = -1.8, left side ~0.2 m) -> high violation.
-env.x, env.y, env.heading = -1.8, 0.0, 0.0
+# Hugging the left wall (x = -1.9, left side ~0.1 m) -> high violation.
+env.x, env.y, env.heading = -1.9, 0.0, 0.0
 dist = env._scan()
 v_hug = env._margin_violation(dist)
 check("hugging left wall -> margin violation high",
       v_hug > 0.4, f"v={v_hug:.3f}")
 # Hugging the right wall mirrors it.
-env.x, env.y, env.heading = 1.8, 0.0, 0.0
+env.x, env.y, env.heading = 1.9, 0.0, 0.0
 dist = env._scan()
 v_hug_r = env._margin_violation(dist)
 check("hugging right wall -> margin violation high",
       v_hug_r > 0.4, f"v={v_hug_r:.3f}")
-# Narrow path: a 0.7 m corridor (walls at x = +/-0.35). Centered
-# the rover just meets the margin; drifting off-center violates it.
+# Narrow path: a 0.5 m corridor (walls at x = +/-0.25, a standard
+# interior door). Centered the rover just meets the 0.25 m margin;
+# drifting off-center violates it.
 env.x, env.y, env.heading = 0.0, 0.0, 0.0
-env.obstacles = [(-2.0, -1.5, -0.35, 1.5), (0.35, -1.5, 2.0, 1.5)]
+env.obstacles = [(-2.0, -1.5, -0.25, 1.5), (0.25, -1.5, 2.0, 1.5)]
 dist = env._scan()
 v_narrow_center = env._margin_violation(dist)
 env.x, env.y, env.heading = 0.15, 0.0, 0.0  # drifted 0.15 m right

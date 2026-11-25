@@ -167,24 +167,25 @@ accumulates -0.1 per step with no progress reward to offset it.
 
 The rover reads its left clearance (sectors 16–20, around 270°) and
 its right clearance (sectors 4–8, around 90°) and takes the smaller
-of the two. If that nearer side has at least **0.35 m** of clearance,
+of the two. If that nearer side has at least **0.25 m** of clearance,
 the penalty is **0** — no need to be exactly centered; as long as it
 leaves enough margin, that is good enough. If the nearer clearance
-drops below 0.35 m, the penalty ramps up linearly to -1.0 at zero
+drops below 0.25 m, the penalty ramps up linearly to -1.0 at zero
 clearance.
 
 ```
 clearance = min(left, right)
-if clearance >= 0.35:  penalty = 0
-else:                  penalty = -1.0 * (0.35 - clearance) / 0.35
+if clearance >= 0.25:  penalty = 0
+else:                  penalty = -1.0 * (0.25 - clearance) / 0.25
 ```
 
-In a narrow path (say 0.7 m wide), being centered gives 0.35 m on
-each side — exactly at the margin, so no penalty. Drifting 0.15 m to
-one side leaves 0.20 m on that side, which is a penalty of
--1.0 × (0.35 - 0.20) / 0.35 = **-0.43** per step. So the rover is
-pushed back to center *in a narrow path*, but in a wide path it can
-sit off-center freely. This is `_margin_violation()` in the code.
+In a narrow path (say a 0.5 m corridor — a standard interior door),
+being centered gives 0.25 m on each side — exactly at the margin, so
+no penalty. Drifting 0.15 m to one side leaves 0.10 m on that side,
+which is a penalty of -1.0 × (0.25 - 0.10) / 0.25 = **-0.60** per
+step. So the rover is pushed back to center *in a narrow path*, but
+in a wide path it can sit off-center freely. This is
+`_margin_violation()` in the code.
 
 ### (f) Turn / stop penalties: -0.05 each
 
@@ -205,7 +206,7 @@ It drives forward one step (0.03 m toward the goal):
 ```
 step penalty:      -0.10
 progress:          +10 × 0.03 = +0.30
-margin violation:  0.00   (0.5 m clearance each side, above the 0.35 m margin)
+margin violation:  0.00   (0.5 m clearance each side, above the 0.25 m margin)
 turn/stop:         0.00   (it drove forward)
 TOTAL:             +0.20
 ```
@@ -216,13 +217,13 @@ clearance on the left, 0.80 m on the right) and drives forward:
 ```
 step penalty:      -0.10
 progress:          +0.30
-margin violation:  -1.0 × (0.35 - 0.20) / 0.35 = -0.43
+margin violation:  -1.0 × (0.25 - 0.20) / 0.25 = -0.20
 turn/stop:         0.00
-TOTAL:             -0.23
+TOTAL:             +0.00
 ```
 
 Same forward motion, same progress — but the wall-hugging step
-scores **-0.23** while the centered step scores **+0.20**. Over
+scores **+0.00** while the centered step scores **+0.20**. Over
 hundreds of steps, that difference is what teaches the rover to
 keep its distance from walls.
 
@@ -348,7 +349,7 @@ is at (1.0, 0.9).
 | 0 | Reset. Rover at (-1.2, -0.8), goal 2.5 m away to the north-east. | — |
 | 1–10 | Policy drives forward. The goal is ahead and slightly left, so it mixes forward steps with small left turns. Each forward step: +0.2 net. | ~+2.0 total |
 | 11 | A box obstacle appears in the forward sectors (0.6 m ahead). The policy turns left to go around it. Turn step: -0.15. | -0.15 |
-| 12–20 | It drives forward along the left side of the box, keeping ~0.5 m clearance (above the 0.35 m margin, so no margin penalty). | ~+1.8 total |
+| 12–20 | It drives forward along the left side of the box, keeping ~0.5 m clearance (above the 0.25 m margin, so no margin penalty). | ~+1.8 total |
 | 21–30 | It turns right to head back toward the goal, then drives straight. A few turn steps at -0.15 each, then forward steps at +0.2. | ~+0.5 total |
 | 31 | It enters the goal radius (0.25 m). Episode ends. | **+100** |
 
@@ -380,7 +381,7 @@ crash is what drives all the learning.
 | `STEP_PENALTY` | -0.1 | Hurry-up tax. Bigger magnitude = shorter routes, but also more risk-taking. |
 | `PROGRESS_SCALE` | 10.0 | How much closing distance matters. Bigger = more direct routes to the goal. |
 | `CENTER_SCALE` | 1.0 | How much the side-margin violation matters. Bigger = more clearance from walls. |
-| `SIDE_MARGIN_M` | 0.35 m | The clearance the rover tries to keep on its tighter side. Bigger = more cautious, but less able to fit through narrow gaps. |
+| `SIDE_MARGIN_M` | 0.25 m | The clearance the rover tries to keep on its tighter side. Bigger = more cautious, but less able to fit through narrow gaps. |
 | `TURN_PENALTY` | -0.05 | Cost of turning. Bigger magnitude = straighter paths, but slower to react to obstacles. |
 | `STOP_PENALTY` | -0.05 | Cost of stopping. Bigger magnitude = less dawdling. |
 

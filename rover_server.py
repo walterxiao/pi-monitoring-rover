@@ -36,7 +36,7 @@ arriving, so the rover can never run away on its own.
 SAFETY (BOTH LIDARS): the learned modes (Tour and Go to goal) are
 overridden by one rule — if EITHER the LD19's forward arc or the
 TF-Luna's low front beam sees an obstacle under the minimum
-distance picked on the drive page (0.5 m by default), the rover
+distance picked on the drive page (0.3 m by default), the rover
 stops and turns away instead of following the policy, using the
 minimum-angle escape from the full 360° LD19 sweep (left or
 right, whichever is the smaller turn), so it gets out of a corner
@@ -81,13 +81,17 @@ instantly, and it stops if the page loses contact for 3 seconds.
 The ONNX file and onnxruntime must be on the Pi (see BUILD_GUIDE.md).
 
 TOUR (THE EXPLORE MODE): tap "🗺️ Tour" and the same policy drives,
-but the goal is virtual — every second the rover aims a few metres
-out into the most open corridor the LD19 sees, so the goal keeps
-moving and the rover tours the house instead of driving to a point.
-It never "arrives", so it never stops on its own. This is the
-rover's only explore mode now: the old rule-based Obstacle Avoid
-was consolidated into it (Nov 24) — the policy already avoids
-obstacles, and the rule-based logic lives on as the safety
+but the goal is virtual — a fixed point straight ahead of the
+rover, a few metres out. The rover drives straight until it
+reaches a wall or corner, then the safety override turns it
+(at the 0.30 m Min dist) toward open space and it goes straight
+again. A new goal point is picked only when the rover gets close
+to the current one or a wall blocks the way, so it never
+"arrives" and just keeps going straight, turning at each wall.
+This is the rover's only explore mode now: the old rule-based
+Obstacle Avoid was consolidated into it (Nov 24) — the policy
+already avoids obstacles, and the rule-based logic lives on as
+the safety
 override above, not as a separate mode. Same D-pad takeover, same
 3-second heartbeat. It doesn't remember where it's been (the
 policy only sees the LiDAR, not the map), so it can revisit rooms
@@ -247,8 +251,8 @@ PAGE = """<!DOCTYPE html>
   <button id="autotoggle" class="overlay">\U0001F916 Line Follow: Off</button>
   <div id="mindistctl" class="overlay">
     <label for="mindist">Min dist</label>
-    <input id="mindist" type="range" min="0.3" max="2" step="0.05" value="0.5">
-    <span id="mindistval">0.50 m</span>
+    <input id="mindist" type="range" min="0.3" max="2" step="0.05" value="0.3">
+    <span id="mindistval">0.30 m</span>
   </div>
   <button id="maptoggle" class="overlay">\U0001F5FA Map: Off</button>
   <button id="policytoggle" class="overlay">\U0001F916 Go to goal: Off</button>
@@ -380,7 +384,7 @@ PAGE = """<!DOCTYPE html>
   }
   tourtoggle.addEventListener('click', () => setTour(!tourOn));
   // Minimum safety distance picker: the policy turns away when
-  // something gets closer than this (0.30–2.00 m, 0.50 m default).
+  // something gets closer than this (0.30–2.00 m, 0.30 m default).
   // The label follows the slider live; the value is sent when released.
   // Blur after sending so arrow keys drive again right away.
   const mindist = document.getElementById('mindist');
@@ -1195,11 +1199,18 @@ def auto_loop():
 # bird's-eye radar view. If pyserial is missing or the adapter is
 # unplugged, the reader just reports offline — the server and the
 # camera-based fallback keep working.
-LIDAR_PORT = "/dev/ttyUSB0"
+# The TF-Luna's port is found by its data signature (see
+# lidar_find_port), not by a fixed name — after a reboot the two
+# USB adapters can swap between /dev/ttyUSB0 and /dev/ttyUSB1, and
+# a hardcoded port would read the LD19's stream as garbage (Nov 24,
+# 2026: both sensors went offline after a reboot because the ports
+# swapped). The LD19 finder skips whichever port the TF-Luna is
+# using, and vice versa, so the two sensors are told apart by what
+# they send.
 LIDAR_BAUD = 115200
 LIDAR = {"online": False, "dist_m": None, "strength": None,
          "temp_c": None, "updated": 0.0, "frames": 0, "bad": 0,
-         "error": ""}
+         "error": "", "port": None}
 LIDAR_LOCK = threading.Lock()
 # Heading estimate for the radar trail: degrees, clockwise
 # positive like a compass bearing (0 = north, 90 = east; a right
@@ -1246,6 +1257,48 @@ def lidar_extract(buf):
     return readings
 
 
+def lidar_find_port():
+    """Find the TF-Luna's serial port by its data signature. Opens each
+    /dev/ttyUSB* port except the LD19's at 115200 baud and looks for
+    valid TF-Luna frames (0x59 0x59 header + checksum). Returns the
+    port, or None if no TF-Luna stream is found."""
+    import glob
+    try:
+        import serial
+    except ImportError:
+        return None
+    for port in sorted(glob.glob("/dev/ttyUSB*")):
+        with LD19_LOCK:
+            ld19_port = LD19.get("port")
+        if port == ld19_port:
+            continue  # the LD19 lives here — never steal its port
+        try:
+            ser = serial.Serial(port, LIDAR_BAUD, timeout=0.2)
+        except Exception:
+            continue
+        try:
+            buf = bytearray()
+            good = 0
+            t_end = time.time() + 1.0
+            while time.time() < t_end and good < 2:
+                chunk = ser.read(4096)
+                if chunk:
+                    buf.extend(chunk)
+                    good += len(lidar_extract(buf))
+                    if good >= 2:
+                        break
+            if good >= 2:
+                return port
+        except Exception:
+            pass
+        finally:
+            try:
+                ser.close()
+            except Exception:
+                pass
+    return None
+
+
 def lidar_loop():
     """Read the TF-Luna forever, updating LIDAR + TRAIL. Never
     raises: a missing adapter or bad port just means offline."""
@@ -1259,16 +1312,26 @@ def lidar_loop():
     buf = bytearray()
     last_sample = 0.0
     while True:
-        try:
-            ser = serial.Serial(LIDAR_PORT, LIDAR_BAUD, timeout=0.2)
-        except Exception as e:
+        port = lidar_find_port()
+        if port is None:
             with LIDAR_LOCK:
                 LIDAR["online"] = False
-                LIDAR["error"] = f"cannot open {LIDAR_PORT}: {e}"
+                LIDAR["port"] = None
+                LIDAR["error"] = "no TF-Luna on any /dev/ttyUSB* port"
             time.sleep(5.0)
             continue
         with LIDAR_LOCK:
+            LIDAR["port"] = port
             LIDAR["error"] = ""
+        try:
+            ser = serial.Serial(port, LIDAR_BAUD, timeout=0.2)
+        except Exception as e:
+            with LIDAR_LOCK:
+                LIDAR["online"] = False
+                LIDAR["port"] = None
+                LIDAR["error"] = f"cannot open {port}: {e}"
+            time.sleep(5.0)
+            continue
         try:
             while True:
                 chunk = ser.read(ser.in_waiting or 1)
@@ -1302,6 +1365,7 @@ def lidar_loop():
         except Exception as e:
             with LIDAR_LOCK:
                 LIDAR["online"] = False
+                LIDAR["port"] = None
                 LIDAR["error"] = f"read error: {e}"
             try:
                 ser.close()
@@ -1359,8 +1423,10 @@ LD19_AVOID_HALF_ANGLE = 30  # avoid watches the LD19's forward arc,
 # to treat a side wall as a head-on block.
 MANUAL_SLOW_M = 1.0  # manual driving: below this distance the
 # rover slows down as it approaches an obstacle.
-MANUAL_STOP_M = 0.30  # manual driving: at or below this distance
-# the rover will not drive toward the obstacle at all.
+MANUAL_STOP_M = 0.25  # manual driving: at or below this distance
+# the rover will not drive toward the obstacle at all. 0.25 m leaves
+# 0.05 m past the 0.20 m body radius — tight, but manual driving is
+# slow and supervised, and a standard door needs the room.
 MANUAL_REAR_HALF_ANGLE = 45  # reverse protection watches the
 # LD19's rear arc, +/-45 deg around bin 180 (rover back).
 LD19 = {"online": False, "port": None, "hz": 0.0, "points": 0,
@@ -1442,7 +1508,9 @@ def ld19_find_port():
     except ImportError:
         return None
     for port in sorted(glob.glob("/dev/ttyUSB*")):
-        if port == LIDAR_PORT:
+        with LIDAR_LOCK:
+            lidar_port = LIDAR.get("port")
+        if port == lidar_port:
             continue  # the TF-Luna lives here — never steal its port
         try:
             ser = serial.Serial(port, LD19_BAUD, timeout=0.2)
@@ -1487,6 +1555,7 @@ def ld19_loop():
         if port is None:
             with LD19_LOCK:
                 LD19["online"] = False
+                LD19["port"] = None
                 LD19["error"] = "no LD19 on any /dev/ttyUSB* port"
             time.sleep(5.0)
             continue
@@ -1498,6 +1567,7 @@ def ld19_loop():
         except Exception as e:
             with LD19_LOCK:
                 LD19["online"] = False
+                LD19["port"] = None
                 LD19["error"] = f"cannot open {port}: {e}"
             time.sleep(5.0)
             continue
@@ -1765,7 +1835,10 @@ def ld19_escape_direction(stop_m):
 # from both LiDARs: the LD19's forward arc watches the
 # surroundings, the TF-Luna watches the low front. It never backs
 # up.
-LIDAR_STOP_M = 0.5     # default minimum safety distance (m)
+LIDAR_STOP_M = 0.3     # default minimum safety distance (m) — low
+# enough for a standard interior door (~0.8 m wide: the posts read
+# ~0.4 m from the rover's center, so 0.5 m blocked every doorway).
+# Raise it on the page slider (up to 2.0 m) for more caution.
 # The minimum safety distance is pickable on the drive page
 # (0.30–2.00 m); the picked value lives here and resets to the
 # default when the server restarts.
@@ -2142,15 +2215,18 @@ POLICY = {"active": False, "last_ping": 0.0, "status": "policy off",
 POLICY_LOCK = threading.Lock()
 
 # --- Tour mode: the same policy, no fixed goal ---------------------------
-# Tour uses the go-to-goal policy with a virtual goal that points
-# at open space: every second (or when the rover gets close to the
-# current virtual goal) it picks the most open corridor from the
-# LD19 scan and aims a few metres out into it. The goal keeps
-# moving as the rover moves, so it never "arrives" — it just keeps
-# following open space through the house. No retraining, no new
-# model file; the tour is a goal source, the policy does the
+# Tour uses the go-to-goal policy with a virtual goal straight
+# ahead of the rover: a fixed point a few metres out (80% of the
+# forward clearance, capped at 2.5 m). The rover drives straight
+# until it reaches a wall or corner; the safety override turns it
+# (at the 0.30 m Min dist) toward open space and it goes straight
+# again. A new point is picked only when the rover gets close to
+# the current one or a wall blocks the way, so it never "arrives"
+# — it just keeps going straight, turning at each wall. No
+# retraining, no new model file; the tour is a goal source, the
+# policy does the
 # driving. The same both-LiDAR safety override applies.
-TOUR_REPICK_S = 1.0  # pick a new virtual goal this often
+TOUR_REPICK_S = 1.0  # how often the loop re-checks the virtual goal
 TOUR_GOAL_DIST_M = 2.5  # virtual goal this far out (m)
 TOUR_GOAL_CLOSE_M = 0.8  # repick when this close to the virtual goal
 TOUR = {"active": False, "last_ping": 0.0, "status": "tour off",
@@ -2250,6 +2326,20 @@ def policy_stop(reason):
         apply_drive(0, 0)
 
 
+def _arc_min(angle_deg, half_deg):
+    """Minimum LD19 distance in the arc centred on angle_deg
+    (clockwise from the rover's front), or None if the LD19 is
+    offline/stale. No-return bins count as clear (12 m)."""
+    with LD19_LOCK:
+        if not LD19["online"] or time.time() - LD19["updated"] > 1.0:
+            return None
+        bins = list(LD19["bins"])
+    ds = [bins[(int(round(angle_deg)) + k) % 360]
+          for k in range(-half_deg, half_deg + 1)]
+    ds = [d for d in ds if d is not None]
+    return min(ds) if ds else 12.0
+
+
 def tour_goal_direction():
     """Pick the tour direction from the full LD19 scan: the
     direction whose ±20° arc has the largest minimum distance —
@@ -2276,13 +2366,26 @@ def tour_goal_direction():
 
 
 def tour_pick_goal():
-    """Set the policy goal to a virtual tour target: a point out
-    in the most open direction from the LD19 scan. Returns True
-    if a goal was set, False if the LD19 has no answer."""
-    res = tour_goal_direction()
-    if res is None:
+    """Set the policy goal to a virtual tour target: a point
+    STRAIGHT AHEAD of the rover. Returns True if a goal was set,
+    False if the LD19 has no answer. The rover drives straight
+    until it reaches a wall or corner, then turns for another
+    direction — it does NOT steer toward the "most open"
+    corridor (that made it wander and circle). The goal is a
+    FIXED point in the world — the policy loop only calls this
+    when a new goal is needed (arrived, or the path to the old
+    one is blocked). The turn at the wall comes from the
+    both-LiDAR safety override: it stops the rover at the Min
+    dist (0.30 m) and turns it via minimum-angle escape toward
+    open space, after which the next goal is straight ahead in
+    the new heading. The goal sits just short of the wall ahead
+    (80% of the forward clearance), never closer than 0.5 m so
+    it stays ahead of the rover."""
+    fwd_min = _arc_min(0, 30)
+    if fwd_min is None:
         return False
-    ang_deg, min_dist = res
+    ang_deg = 0.0
+    min_dist = fwd_min
     # Goal this far out, inside the clear corridor (not at the
     # wall); never closer than 0.5 m so it stays ahead of the rover.
     gd = min(min_dist * 0.8, TOUR_GOAL_DIST_M)
@@ -2303,6 +2406,29 @@ def tour_pick_goal():
         TOUR["goal_x"] = gx
         TOUR["goal_y"] = gy
     return True
+
+
+def tour_goal_blocked():
+    """True if the path to the current virtual goal is blocked:
+    the nearest LD19 return in a ±15° arc toward the goal is
+    closer than the goal itself, so a wall sits between the
+    rover and the goal. False when there is no virtual goal,
+    the LD19 has no answer, or the way is clear."""
+    with POLICY_LOCK:
+        if POLICY["goal_x"] is None or not POLICY.get("goal_virtual"):
+            return False
+        gx, gy = POLICY["goal_x"], POLICY["goal_y"]
+    with POSE_LOCK:
+        px, py, ph = POSE["x"], POSE["y"], POSE["heading"]
+    dx, dy = gx - px, gy - py
+    gd = math.hypot(dx, dy)
+    if gd < 1e-6:
+        return False
+    goal_ang = (math.degrees(math.atan2(dx, dy)) - ph) % 360.0
+    arc_min = _arc_min(goal_ang, 15)
+    if arc_min is None:
+        return False
+    return arc_min < gd
 
 
 def tour_set_status(text):
@@ -2336,8 +2462,11 @@ def policy_loop():
     policy when blocked (minimum-angle escape turn); both LiDARs
     offline means stop and wait. Reaching the
     goal (<= 0.25 m) stops the rover and ends the run — except in
-    tour mode, where the goal is virtual and keeps moving: reaching
-    it just picks a new one, so the rover never stops. Stops if
+    tour mode, where the goal is virtual: reaching it just picks
+    a new one, so the rover never stops. The virtual goal is a
+    fixed point in the world (re-picked only when the rover gets
+    close or the path to it is blocked), so the rover drives
+    straight toward it instead of circling. Stops if
     the page heartbeat is gone for 3 s."""
     blocked_since = None
     escape_dir = "left"
@@ -2357,19 +2486,20 @@ def policy_loop():
                 policy_stop("page gone — policy stopped")
             time.sleep(0.1)
             continue
-        # Tour mode: the goal is virtual and moves. Repick it every
-        # second, or when the rover gets close to it, so it stays
-        # ahead and the rover never "arrives".
+        # Tour mode: the virtual goal is a FIXED point in the
+        # world. Only pick a new one when there is none, the rover
+        # gets close to it, or the path to it is blocked — never
+        # on a timer. Re-placing it every second at a fixed angle
+        # off the rover's nose made the rover circle: the goal
+        # stayed forever off to one side instead of coming into
+        # alignment as the rover turned toward it.
         if tour_on:
-            now = time.time()
-            with TOUR_LOCK:
-                repick_at = TOUR["repick_at"]
             gd = policy_goal_dist()
-            if now >= repick_at or (gd is not None
-                                    and gd < TOUR_GOAL_CLOSE_M):
+            if gd is None or gd < TOUR_GOAL_CLOSE_M \
+                    or tour_goal_blocked():
                 if tour_pick_goal():
                     with TOUR_LOCK:
-                        TOUR["repick_at"] = now + TOUR_REPICK_S
+                        TOUR["repick_at"] = time.time() + TOUR_REPICK_S
         # Goal reached?
         gd = policy_goal_dist()
         if gd is not None and gd <= POLICY_GOAL_REACHED_M:

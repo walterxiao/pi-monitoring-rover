@@ -197,7 +197,7 @@ how a 4WD car turns, there's no steering wheel. On a computer the
 keyboard arrow keys drive the same way: hold an arrow to move, let
 go to stop. **Manual safety:** driving forward or back slows down
 as an obstacle approaches (below 1.0 m) and stops before hitting it
-(at 0.30 m) — forward uses the LD19 forward arc + TF-Luna, reverse
+(at 0.25 m) — forward uses the LD19 forward arc + TF-Luna, reverse
 uses the LD19 rear arc. Turns (spinning in place) are not limited.
 If both LiDARs are offline the rover drives unprotected, as before. The button in the center of the D-pad (↻ 180°) spins
 the rover a half-turn in place — tap it once and it turns around by
@@ -350,9 +350,11 @@ missing, stale readings) does the rover stop and wait — it never
 drives blind.
 
 **Pick the distance:** the **Min dist** slider on the drive page
-sets the minimum safety distance (0.30–2.00 m, 0.50 m default).
-The radar shows it as a dashed red ring. The picked value resets
-to 0.50 m when the server restarts.
+sets the minimum safety distance (0.30–2.00 m, 0.30 m default —
+low enough for a standard interior door, whose posts read ~0.4 m;
+the old 0.50 m default blocked every doorway). The radar shows it
+as a dashed red ring. The picked value resets to 0.30 m when the
+server restarts.
 
 **Seeing what the LiDAR sees:** the video shows a cyan marker at
 the center — that's where the beam points — labeled with the
@@ -375,10 +377,15 @@ always exact; the trail is a rough sketch.
 
 **Set up:** the TF-Luna kit (youyeetoo, USB-TTL adapter included)
 wires TX → adapter RX, RX → TX, GND → GND, VCC → adapter 5V, with
-the adapter jumper on 3.3V, plugged into a Pi USB port
-(`/dev/ttyUSB0`). On the Pi, once: `sudo apt install -y
-python3-serial` and `sudo usermod -aG dialout xiao` (serial-port
-permission), then restart the server. The 3D-printed holder mounts
+the adapter jumper on 3.3V, plugged into a Pi USB port. On the Pi,
+once: `sudo apt install -y python3-serial` and
+`sudo usermod -aG dialout wxiao` (serial-port permission), then
+restart the server. The server finds the TF-Luna by its data
+signature (0x59 0x59 frames + checksum), not by a fixed port name —
+after a reboot the two USB adapters can swap between /dev/ttyUSB0
+and /dev/ttyUSB1, and a hardcoded port would read the LD19's stream
+as garbage (both sensors went offline this way on Nov 24, 2026;
+fixed by auto-detecting both). The 3D-printed holder mounts
 the sensor on the chassis nose (see the MakerWorld model). Clear
 the room of small stuff for the first run — the beam sits a few cm
 up, so very low obstacles can hide under it. Keep the first run
@@ -406,9 +413,10 @@ opens up instead of backing up. The map (SLAM) is built — see Phase 10 below.
 
 **Set up:** plug the LD19 kit's USB adapter into a Pi USB port.
 The server auto-detects which port is the LD19 by its data
-signature (0x54 header + CRC), skipping the TF-Luna's port, so
-it doesn't matter which ttyUSB port each adapter lands on and
-the LD19 never steals the TF-Luna's port. No extra install —
+signature (0x54 header + CRC), skipping whichever port the TF-Luna
+is using, so it doesn't matter which ttyUSB port each adapter lands
+on and the two sensors never steal each other's port (both find
+their sensor by signature since Nov 24, 2026). No extra install —
 pyserial is already there from the Nov 14 commands. The mount
 is the printed gantry (see `ld19_gantry.py` / the 3MF): legs
 bolted to the side plates, sensor on top above the camera mast.
@@ -536,29 +544,48 @@ LiDAR.
 
 Tap **🗺️ Tour** and the rover explores the house on its own. It
 uses the exact same trained policy as Go to goal — no retraining,
-no new model file — but the goal is virtual: every second the rover
-aims a few metres out into the most open corridor the LD19 sees
-(the direction whose ±20° arc has the largest minimum distance),
-so the goal keeps moving as the rover moves and it never "arrives".
-It just follows open space through the house. It stops only when
-you tap Tour off, press the D-pad, or the page loses contact for
-3 seconds. Same both-LiDAR safety override as Go to goal.
+no new model file — but the goal is virtual: a fixed point
+straight ahead of the rover, a few metres out (80% of the
+forward clearance, capped at 2.5 m, never closer than 0.5 m).
+The rover drives STRAIGHT toward it until it reaches a wall or
+corner, then turns for another direction — it does not steer
+toward the "most open" corridor. The turn at the wall comes from
+the both-LiDAR safety override: it stops the rover at the Min
+dist (**0.30 m** — the margin) and turns it via minimum-angle
+escape toward open space, after which the next goal is straight
+ahead in the new heading. A new goal point is picked only when
+the rover gets close to the current one (within 0.8 m) or a wall
+blocks the way, so it never "arrives" and just keeps going
+straight, turning at each wall. It stops only when you tap Tour
+off, press the D-pad, or the page loses contact for 3 seconds.
+Same both-LiDAR safety override as Go to goal.
 
 **Honest limit:** the tour chases open space, so it can wander
 back into a room it already visited — the policy only sees the
 LiDAR, not the map, so it doesn't remember where it's been. A
 dedicated explore policy (trained to reward new ground and
 penalize revisiting) would be needed for methodical coverage.
-Verified in simulation (`test_tour.py`, 26/26): the direction
-picker aims at open space, not walls; the virtual goal moves with
-the rover; the tour keeps driving and repicks instead of stopping
-at a goal; the /tour/ endpoints work; Go to goal turns the tour
-off and keeps a fixed goal the user tapped (a virtual goal is
-cleared, a tapped goal is not). **Consolidated Nov 24:** Tour is
-now the rover's only explore mode — the old rule-based Obstacle
-Avoid was folded into it (its logic survives as the Phase 8
-safety override). The /tour/ endpoints and the Min dist slider
-(now under /safety/mindist) are unchanged.
+**Straight ahead (Nov 24, Walter's direction):** the tour goal
+used to aim at the "most open" corridor, which made the rover
+wander and circle. Now the goal is always straight ahead: the
+rover drives straight until it reaches a wall or corner, then
+the safety override turns it (at the 0.30 m Min dist) toward
+open space and it goes straight again. The earlier fixed-point
+fix (goal placed once, re-picked only on arrival/blocked) is
+kept — what changed is the goal now points straight ahead
+instead of at the most open corridor. Verified in simulation
+(`test_tour.py`, 35/35): the goal is straight ahead even when
+another side is more open; it stays straight ahead while
+driving (never off to a side); it is repicked on arrival; a
+wall before the goal counts as blocked (a wall beyond it, or
+off to the side, does not); the tour keeps driving and the
+/tour/ endpoints work; Go to goal turns the tour off and keeps
+a fixed goal the user tapped (a virtual goal is cleared, a
+tapped goal is not). **Consolidated Nov 24:** Tour is now the
+rover's only explore mode — the old rule-based Obstacle Avoid
+was folded into it (its logic survives as the Phase 8 safety
+override). The /tour/ endpoints and the Min dist slider (now
+under /safety/mindist) are unchanged.
 
 ---
 

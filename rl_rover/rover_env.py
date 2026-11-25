@@ -56,9 +56,11 @@ CENTER_SCALE = 1.0  # per-step penalty for violating the side
 # In a narrow path any drift off-center shrinks the nearer
 # clearance below the margin, so the penalty pushes the rover
 # back to center.
-SIDE_MARGIN_M = 0.35  # minimum clearance on the tighter side (m);
-# the rover's body radius is 0.20 m, so this leaves 0.15 m of
-# edge clearance.
+SIDE_MARGIN_M = 0.25  # minimum clearance on the tighter side (m);
+# the rover's body radius is 0.20 m, so this leaves 0.05 m of
+# edge clearance. Low enough for a standard interior door (~0.8 m
+# wide: centered, each side reads ~0.20 m, so the door costs only
+# a small penalty instead of blocking the route).
 TURN_PENALTY = -0.05  # per turn action (left/right): shortest time
 # wins, so turning costs a little extra — the policy prefers to
 # drive straight and only turns when it needs to (to avoid an
